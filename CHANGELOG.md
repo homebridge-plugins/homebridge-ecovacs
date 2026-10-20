@@ -6,7 +6,7 @@ All notable changes to `@homebridge-plugins/homebridge-ecovacs` will be document
 
 ### Changed
 
-- ci: update github actions to their latest versions
+- ci: update github actions to their latest versions (#321)
 
 ## v8.2.4 (2026-10-18)
 
