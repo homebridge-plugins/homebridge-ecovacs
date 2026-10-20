@@ -67,6 +67,12 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
   /** Tracked so we can guard handler state checks. */
   private currentOperationalState = 66 // start docked
 
+  // The last ChargeState and battery level seen, which together decide the
+  // battery's charge state - the part of the battery the Home app reads to
+  // show it charging. Nothing set it before, so it stayed Unknown for good
+  private lastChargeState?: 'returning' | 'charging' | 'idle'
+  private lastBatteryPercent?: number
+
   /** Accumulated map data: mapId → mapName */
   private readonly mapsById = new Map<number, string>()
   /** Accumulated area data: areaId → { mapId, name } */
@@ -336,7 +342,26 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
         break
       default:
         this.logDebug(`unrecognised ChargeState: ${newVal}`)
+        return
     }
+    this.lastChargeState = newVal.toLowerCase() as 'returning' | 'charging' | 'idle'
+    await this.updateState('powerSource', { batChargeState: this.batChargeState() })
+  }
+
+  /** The battery's PowerSource.BatChargeState for the last ChargeState and level seen. */
+  private batChargeState(): number {
+    if (!this.lastChargeState) {
+      return 0 // Unknown
+    }
+    if (this.lastChargeState === 'charging') {
+      return 1 // IsCharging
+    }
+    // 'idle' also arrives while cleaning, so only a full robot that isn't
+    // running counts as topped up
+    if (this.lastChargeState === 'idle' && this.lastBatteryPercent === 100 && this.currentOperationalState !== 1) {
+      return 2 // IsAtFullCharge
+    }
+    return 3 // IsNotCharging
   }
 
   private async onBatteryInfo(newVal: number): Promise<void> {
@@ -348,10 +373,12 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
     const batPercentRemaining = newVal * 2
     // batChargeLevel: 0 = OK, 1 = Warning, 2 = Critical
     const batChargeLevel = newVal <= 10 ? 2 : newVal <= 20 ? 1 : 0
+    this.lastBatteryPercent = newVal
     await this.updateState('powerSource', {
       status: 1, // active
       batPercentRemaining,
       batChargeLevel,
+      batChargeState: this.batChargeState(),
     })
   }
 
