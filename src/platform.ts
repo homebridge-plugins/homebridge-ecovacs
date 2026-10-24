@@ -309,7 +309,9 @@ export class EcovacsPlatform implements DynamicPlatformPlugin {
                     if (typeof v === 'string') {
                       logQuotes(`${key}.${id}.${k}`)
                     }
-                    this.deviceConf[id][k] = v === 'false' ? false : !!v
+                    this.deviceConf[id][k] = v === 'false'
+                      ? false
+                      : !!v
                     break
                   case 'ignoreDevice':
                     if (typeof v === 'string') {
@@ -427,7 +429,9 @@ export class EcovacsPlatform implements DynamicPlatformPlugin {
           if (typeof val === 'string') {
             logQuotes(key)
           }
-          this.config[key] = val === 'false' ? false : !!val
+          this.config[key] = val === 'false'
+            ? false
+            : !!val
           break
         case 'library':
           // Retired setting (v8.1.0 only): the plugin always runs the stable
@@ -892,7 +896,9 @@ export class EcovacsPlatform implements DynamicPlatformPlugin {
       // config is still recognised as spent
       await this.storageData.setItem('ecovacs_session', {
         account: this.sessionAccountKey(),
-        usedCode: saved?.account === this.sessionAccountKey() ? saved?.usedCode : undefined,
+        usedCode: saved?.account === this.sessionAccountKey()
+          ? saved?.usedCode
+          : undefined,
       })
     } catch (err) {
       this.log.debugWarn('%s %s.', platformLang.storageSetupErr, parseError(err))
@@ -1384,7 +1390,10 @@ export class EcovacsPlatform implements DynamicPlatformPlugin {
       accessory.control.on('MapVirtualBoundaries', (vbs) => {
         if (vbs) {
           accessory.logDebug(`MapVirtualBoundaries: ${JSON.stringify(vbs)}`)
-          const vbsCombined = [...vbs.mapVirtualWalls, ...vbs.mapNoMopZones]
+          const vbsCombined = [
+            ...vbs.mapVirtualWalls,
+            ...vbs.mapNoMopZones,
+          ]
           const virtualBoundaryArray: any[] = []
           Object.keys(vbsCombined).forEach((key) => {
             virtualBoundaryArray[vbsCombined[key].mapVirtualBoundaryID]
@@ -1582,7 +1591,9 @@ export class EcovacsPlatform implements DynamicPlatformPlugin {
           loadedDevice.run?.('GetBatteryState')
           loadedDevice.run?.('GetChargeState')
           loadedDevice.run?.(
-            `GetCleanState${loadedDevice.is950type_V2() ? '_V2' : ''}`,
+            `GetCleanState${loadedDevice.is950type_V2()
+              ? '_V2'
+              : ''}`,
           )
           loadedDevice.run?.('GetCleanSpeed')
         }, pollInterval * 1000)
@@ -1726,7 +1737,9 @@ export class EcovacsPlatform implements DynamicPlatformPlugin {
         ?.updateCharacteristic(this.hapChar.On, false)
 
       // Select the correct command to run, either start or stop cleaning
-      const order = value ? `Clean${accessory.context.commandSuffix}` : 'Stop'
+      const order = value
+        ? `Clean${accessory.context.commandSuffix}`
+        : 'Stop'
 
       // Log the update
       accessory.log(`${platformLang.curCleaning} [${value ? platformLang.cleaning : platformLang.stop}]`)
@@ -2174,7 +2187,9 @@ export class EcovacsPlatform implements DynamicPlatformPlugin {
 
         // Log the change
         accessory.log(
-          `${platformLang.curTrueDetect} [${newVal === 1 ? 'enabled' : 'disabled'}]`,
+          `${platformLang.curTrueDetect} [${newVal === 1
+            ? 'enabled'
+            : 'disabled'}]`,
         )
       }
 
@@ -2198,7 +2213,9 @@ export class EcovacsPlatform implements DynamicPlatformPlugin {
           .getService('Go Charge')
           ?.updateCharacteristic(this.hapChar.On, newVal === 'returning')
 
-        const chargeState = newVal === 'charging' ? 1 : 0
+        const chargeState = newVal === 'charging'
+          ? 1
+          : 0
         accessory
           .getService(this.hapServ.Battery)
           ?.updateCharacteristic(this.hapChar.ChargingState, chargeState)
@@ -2268,7 +2285,9 @@ export class EcovacsPlatform implements DynamicPlatformPlugin {
       if (accessory.context.cacheBattery !== newVal) {
         // Value is different so update services
         const threshold = accessory.context.rawConfig.lowBattThreshold
-        const lowBattStatus = newVal <= threshold ? 1 : 0
+        const lowBattStatus = newVal <= threshold
+          ? 1
+          : 0
         accessory
           .getService(this.hapServ.Battery)
           ?.updateCharacteristic(this.hapChar.BatteryLevel, newVal)

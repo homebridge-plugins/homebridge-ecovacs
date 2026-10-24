@@ -17,7 +17,10 @@ import { EcovacsPlatform } from './platform.js'
 
 vi.mock('./utils/functions.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('./utils/functions.js')>()
-  return { ...original, sleep: vi.fn(async () => {}) }
+  return {
+    ...original,
+    sleep: vi.fn(async () => {}),
+  }
 })
 
 function makePlatform(): any {
@@ -40,13 +43,17 @@ describe('fetching the device list on a saved session', () => {
         if (calls < 3) {
           throw new Error('ETIMEDOUT')
         }
-        return [{ did: 'robot-1' }]
+        return [
+          { did: 'robot-1' },
+        ]
       }),
     }
 
     const list = await platform.getDeviceListSafe(3)
 
-    expect(list).toEqual([{ did: 'robot-1' }])
+    expect(list).toEqual([
+      { did: 'robot-1' },
+    ])
     expect(calls).toBe(3)
   })
 
@@ -138,7 +145,13 @@ describe('what a failed renewal must never do', () => {
     vi.useFakeTimers()
     const platform = makePlatform()
     platform.config = { username: 'a@b.c', password: 'pw', countryCode: 'GB' }
-    platform.api = { hap: { uuid: { generate: () => 'uuid' } } }
+    platform.api = {
+      hap: {
+        uuid: {
+          generate: () => 'uuid',
+        },
+      },
+    }
     platform.ecovacsAPI = { uid: 'old-uid', user_access_token: 'old-token' }
 
     // the alpha library rejecting the renewal outright
