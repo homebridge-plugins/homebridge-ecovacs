@@ -164,3 +164,17 @@ describe('ecovacsRoboticVacuumAccessory cleaning state (#322)', () => {
     expect(lastBatChargeState(updateAccessoryState)).toBe(2) // IsAtFullCharge
   })
 })
+
+describe('ecovacsRoboticVacuumAccessory area cleaning', () => {
+  it('shows an area clean reported as spotArea_V2 as Running', async () => {
+    const { vacuum, control, updateAccessoryState } = makeVacuum()
+    await vacuum.markRegistered()
+
+    // The report is lower-cased with everything but letters and digits
+    // removed, so the list has to hold 'spotareav2', not 'spotarea_v2'
+    cleanInfo(control, 'spotArea_V2', 'idle')
+    await settle()
+
+    expect(sent(updateAccessoryState, 'rvcOperationalState', 'operationalState').at(-1)).toBe(1)
+  })
+})
