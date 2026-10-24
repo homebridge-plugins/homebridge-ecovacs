@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { EcovacsRoboticVacuumAccessory } from './EcovacsRoboticVacuumAccessory.js'
 
 // Enough of the Homebridge API for the vacuum to build itself and push state
-function makeVacuum() {
+function makeVacuum(isV2 = true) {
   const updateAccessoryState = vi.fn(async () => {})
   const api = {
     matter: {
@@ -27,7 +27,7 @@ function makeVacuum() {
     nick: 'Deebot',
     company: 'Ecovacs',
     deviceModel: 'X1 Plus',
-    isV2: true,
+    isV2,
   } as any)
   const control = Object.assign(new EventEmitter(), {
     run: vi.fn(),
@@ -185,5 +185,63 @@ describe('ecovacsRoboticVacuumAccessory area cleaning', () => {
     await settle()
 
     expect(sent(updateAccessoryState, 'rvcOperationalState', 'operationalState').at(-1)).toBe(1)
+  })
+})
+
+describe('ecovacsRoboticVacuumAccessory suction levels (#322)', () => {
+  function cleanModes(vacuum: unknown): { label: string, mode: number, modeTags: { value: number }[] }[] {
+    return (vacuum as any).clusters.rvcCleanMode.supportedModes
+  }
+
+  it('offers all four suction levels on a newer robot, not just Max', () => {
+    const { vacuum } = makeVacuum()
+
+    expect(cleanModes(vacuum).map(mode => mode.label)).toEqual(['Quiet', 'Standard', 'Max', 'Max+'])
+  })
+
+  it('keeps every level a vacuum mode with its own set of tags, as Matter requires', () => {
+    const { vacuum } = makeVacuum()
+    const tagSets = cleanModes(vacuum).map(mode => mode.modeTags.map(tag => tag.value).sort().join(','))
+
+    expect(new Set(tagSets).size).toBe(tagSets.length)
+    expect(cleanModes(vacuum).every(mode => mode.modeTags.some(tag => tag.value === 16385))).toBe(true)
+  })
+
+  it('shows the speed the robot reports as the matching level', async () => {
+    const { vacuum, control, updateAccessoryState } = makeVacuum()
+    await vacuum.markRegistered()
+
+    control.emit('CleanSpeed', 1)
+    await settle()
+    control.emit('CleanSpeed', 4)
+    await settle()
+    control.emit('CleanSpeed', 2)
+    await settle()
+
+    expect(sent(updateAccessoryState, 'rvcCleanMode', 'currentMode')).toEqual([1, 4, 0])
+  })
+
+  it('sends the matching speed when a level is chosen in Home', async () => {
+    const { vacuum, control } = makeVacuum()
+    await vacuum.markRegistered()
+    Object.assign(control, { is_ready: true })
+    const changeToMode = (vacuum as any).handlers.rvcCleanMode.changeToMode
+
+    await changeToMode({ newMode: 1 })
+    await changeToMode({ newMode: 4 })
+
+    expect(control.run).toHaveBeenCalledWith('SetCleanSpeed', 1)
+    expect(control.run).toHaveBeenCalledWith('SetCleanSpeed', 4)
+  })
+
+  it('keeps the two levels it always had on an older robot', async () => {
+    const { vacuum, control, updateAccessoryState } = makeVacuum(false)
+    await vacuum.markRegistered()
+
+    control.emit('CleanSpeed', 4)
+    await settle()
+
+    expect(cleanModes(vacuum).map(mode => mode.label)).toEqual(['Vacuum', 'Max Clean'])
+    expect(sent(updateAccessoryState, 'rvcCleanMode', 'currentMode')).toEqual([3])
   })
 })

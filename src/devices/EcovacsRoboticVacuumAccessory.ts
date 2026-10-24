@@ -9,7 +9,7 @@
  *   rvcRunMode + rvcOperationalState ← CleanReport and ChargeState events
  *                         together (Stopped / Running / Paused /
  *                         SeekingCharger / Charging / Docked)
- *   rvcCleanMode ← CleanSpeed events (Vacuum / Max Clean)
+ *   rvcCleanMode ← CleanSpeed events (Quiet / Standard / Max / Max+, or Vacuum / Max Clean on older robots)
  *   serviceArea ← configured spot-area IDs in plugin config
  *
  * Handler mapping (Matter → Ecovacs commands):
@@ -24,6 +24,79 @@ import type { API, Logger, MatterRequests } from 'homebridge'
 
 import platformLang from '../utils/lang-en.js'
 import { BaseMatterAccessory } from './BaseMatterAccessory.js'
+
+// Matter mode tags: Quiet and Max are common tags, DeepClean and Vacuum are
+// the robot vacuum clean mode tags
+const QUIET = 2
+const MAX = 7
+const DEEP_CLEAN = 16384
+const VACUUM = 16385
+
+/**
+ * The suction levels to offer. Newer robots have four - silent, normal, high
+ * and very high (CleanSpeed 1 to 4) - while older ones have only normal and
+ * high. Offering just two left the Home app with a single "Max" choice on the
+ * newer ones (#322). The mode numbers 0 and 3 are kept from the earlier list.
+ */
+function cleanModesFor(isV2: boolean) {
+  if (!isV2) {
+    return [
+      {
+        label: 'Vacuum',
+        mode: 0,
+        modeTags: [
+          { value: VACUUM },
+        ],
+      },
+      {
+        label: 'Max Clean',
+        mode: 3,
+        modeTags: [
+          { value: MAX },
+          { value: VACUUM },
+        ],
+      },
+    ]
+  }
+  return [
+    {
+      label: 'Quiet',
+      mode: 1,
+      modeTags: [
+        { value: QUIET },
+        { value: VACUUM },
+      ],
+    },
+    {
+      label: 'Standard',
+      mode: 0,
+      modeTags: [
+        { value: VACUUM },
+      ],
+    },
+    {
+      label: 'Max',
+      mode: 3,
+      modeTags: [
+        { value: MAX },
+        { value: VACUUM },
+      ],
+    },
+    {
+      label: 'Max+',
+      mode: 4,
+      modeTags: [
+        { value: MAX },
+        { value: DEEP_CLEAN },
+        { value: VACUUM },
+      ],
+    },
+  ]
+}
+
+// CleanSpeed (1 silent, 2 normal, 3 high, 4 very high) to and from the modes above
+const SPEED_TO_MODE: Record<number, number> = { 1: 1, 2: 0, 3: 3, 4: 4 }
+const MODE_TO_SPEED: Record<number, number> = { 0: 2, 1: 1, 3: 3, 4: 4 }
 
 /** Ecovacs clean-state values that indicate the vacuum is actively cleaning. */
 const CLEANING_STATES = new Set([
@@ -156,27 +229,13 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
         },
 
         // ── Clean Mode ────────────────────────────────────────────────
-        // Only Vacuum (standard) and Max Clean (high power) are currently
-        // driven by Ecovacs CleanSpeed events. The device does not yet report
+        // Driven by Ecovacs CleanSpeed events. The device does not yet report
         // Mop / Vacuum & Mop modes, so omitted to avoid a stale state.
+        // ⚠️ Matter fixes this list at pairing (and Homebridge keeps the cached
+        // one for a restored accessory), so a change here only reaches a
+        // vacuum added afresh
         rvcCleanMode: {
-          supportedModes: [
-            {
-              label: 'Vacuum',
-              mode: 0,
-              modeTags: [
-                { value: 16385 },
-              ],
-            },
-            {
-              label: 'Max Clean',
-              mode: 3,
-              modeTags: [
-                { value: 7 },
-                { value: 16385 },
-              ],
-            },
-          ],
+          supportedModes: cleanModesFor(isV2),
           currentMode: 0,
         },
 
@@ -471,10 +530,13 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
 
   /** Maps Ecovacs CleanSpeed to Matter rvcCleanMode. */
   private async onCleanSpeed(newVal: number): Promise<void> {
-    // Speed 3 or 4 → Max Clean (mode 3); else → Vacuum (mode 0)
-    const cleanMode = [3, 4].includes(newVal)
-      ? 3
-      : 0
+    let cleanMode = SPEED_TO_MODE[newVal] ?? 0
+    // Older robots only have the two modes, so their high speeds are both Max
+    if (!this.isV2) {
+      cleanMode = [3, 4].includes(newVal)
+        ? 3
+        : 0
+    }
     await this.updateState('rvcCleanMode', { currentMode: cleanMode })
   }
 
@@ -507,16 +569,12 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
     if (!this.isDeviceReady()) {
       return
     }
-    switch (request.newMode) {
-      case 0: // Vacuum (standard) → speed 2
-        this.control.run('SetCleanSpeed', 2)
-        break
-      case 3: // Max Clean → speed 3
-        this.control.run('SetCleanSpeed', 3)
-        break
-      default:
-        this.logWarn(`unsupported clean mode: ${request.newMode}`)
+    const speed = MODE_TO_SPEED[request.newMode]
+    if (speed === undefined || (!this.isV2 && ![0, 3].includes(request.newMode))) {
+      this.logWarn(`unsupported clean mode: ${request.newMode}`)
+      return
     }
+    this.control.run('SetCleanSpeed', speed)
   }
 
   private async handlePause(): Promise<void> {
