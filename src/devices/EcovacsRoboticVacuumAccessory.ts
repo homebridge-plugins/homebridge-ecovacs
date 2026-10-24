@@ -33,8 +33,8 @@ const CLEANING_STATES = new Set([
   'spot',
   'spotarea',
   'customarea',
-  'spotarea_v2',
-  'customarea_v2',
+  'spotareav2',
+  'customareav2',
   'mapping',
 ])
 
