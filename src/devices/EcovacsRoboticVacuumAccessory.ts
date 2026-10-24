@@ -6,8 +6,8 @@
  * Apple Home and other Matter ecosystems.
  *
  * Cluster mapping:
- *   rvcRunMode ← CleanReport events (Idle / Cleaning / Mapping)
- *   rvcOperationalState ← ChargeState events (Stopped / Running / Paused /
+ *   rvcRunMode + rvcOperationalState ← CleanReport and ChargeState events
+ *                         together (Stopped / Running / Paused /
  *                         SeekingCharger / Charging / Docked)
  *   rvcCleanMode ← CleanSpeed events (Vacuum / Max Clean)
  *   serviceArea ← configured spot-area IDs in plugin config
@@ -72,6 +72,17 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
   // show it charging. Nothing set it before, so it stayed Unknown for good
   private lastChargeState?: 'returning' | 'charging' | 'idle'
   private lastBatteryPercent?: number
+
+  // The last CleanReport seen. ChargeState says 'idle' both on the dock and
+  // while cleaning, so it cannot set the state alone - letting it do so made
+  // a cleaning robot flick to Docked on every poll (#322)
+  private lastCleanReport?: string
+
+  // What was last sent, so a poll that changes nothing sends nothing. These
+  // start empty so the first reading is always sent, whatever was cached
+  private sentOperationalState?: number
+  private sentRunMode?: number
+  private sentBatChargeState?: number
 
   /** Accumulated map data: mapId → mapName */
   private readonly mapsById = new Map<number, string>()
@@ -303,65 +314,102 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
   // Event handlers: Ecovacs → Matter state
   // ──────────────────────────────────────────────────────────────────────────
 
-  /** Maps Ecovacs CleanReport values to Matter rvcRunMode + rvcOperationalState. */
   private async onCleanReport(newVal: string): Promise<void> {
     if (!newVal) {
       this.logDebug('CleanReport received with empty value, ignoring')
       return
     }
-    const normalized = newVal.toLowerCase().replace(/[^a-z0-9]+/g, '')
-    if (CLEANING_STATES.has(normalized)) {
-      await this.updateRunMode(1) // Cleaning
-      await this.updateOperationalState(1) // Running
-    } else {
-      // idle / stop – operational state is driven by ChargeState going forward
-      await this.updateRunMode(0) // Idle
-      if (this.currentOperationalState === 1) {
-        await this.updateOperationalState(0) // Stopped (only if it was running)
-      }
-    }
+    this.lastCleanReport = newVal.toLowerCase().replace(/[^a-z0-9]+/g, '')
+    await this.syncStatus()
   }
 
-  /** Maps Ecovacs ChargeState values to Matter rvcOperationalState. */
   private async onChargeState(newVal: string): Promise<void> {
     if (!newVal) {
       this.logDebug('ChargeState received with empty value, ignoring')
       return
     }
-    switch (newVal.toLowerCase()) {
-      case 'returning':
-        await this.updateRunMode(0) // Idle
-        await this.updateOperationalState(64) // SeekingCharger
-        break
-      case 'charging':
-        await this.updateOperationalState(65) // Charging
-        break
-      case 'idle':
-      // Docked & charged
-        await this.updateOperationalState(66) // Docked
-        break
-      default:
-        this.logDebug(`unrecognised ChargeState: ${newVal}`)
-        return
+    const chargeState = newVal.toLowerCase()
+    if (!['returning', 'charging', 'idle'].includes(chargeState)) {
+      this.logDebug(`unrecognised ChargeState: ${newVal}`)
+      return
     }
-    this.lastChargeState = newVal.toLowerCase() as 'returning' | 'charging' | 'idle'
-    await this.updateState('powerSource', { batChargeState: this.batChargeState() })
+    this.lastChargeState = chargeState as 'returning' | 'charging' | 'idle'
+    await this.syncStatus()
   }
 
-  /** The battery's PowerSource.BatChargeState for the last ChargeState and level seen. */
+  /**
+   * The operational state for the last CleanReport and ChargeState seen.
+   * The library sends both at once, often with one of them out of date (it
+   * repeats its last ChargeState with every CleanReport), so cleaning wins
+   * over charging, and charging over returning.
+   */
+  private operationalStateNow(): number {
+    const clean = this.lastCleanReport
+    if (clean && CLEANING_STATES.has(clean)) {
+      return 1 // Running
+    }
+    if (this.lastChargeState === 'charging') {
+      return 65 // Charging
+    }
+    if (clean === 'returning' || this.lastChargeState === 'returning') {
+      return 64 // SeekingCharger
+    }
+    if (clean === 'pause') {
+      return 2 // Paused
+    }
+    // Not cleaning, charging or heading home. A robot that stopped away from
+    // the dock stays Stopped until it is seen heading home or charging;
+    // anything else is sitting on the dock
+    if ([0, 1, 2].includes(this.currentOperationalState)) {
+      return 0 // Stopped
+    }
+    return 66 // Docked
+  }
+
+  /** The battery's PowerSource.BatChargeState for the state worked out above. */
   private batChargeState(): number {
     if (!this.lastChargeState) {
       return 0 // Unknown
     }
-    if (this.lastChargeState === 'charging') {
+    if (this.currentOperationalState === 65) {
       return 1 // IsCharging
     }
-    // 'idle' also arrives while cleaning, so only a full robot that isn't
-    // running counts as topped up
-    if (this.lastChargeState === 'idle' && this.lastBatteryPercent === 100 && this.currentOperationalState !== 1) {
+    if (this.currentOperationalState === 66 && this.lastBatteryPercent === 100) {
       return 2 // IsAtFullCharge
     }
     return 3 // IsNotCharging
+  }
+
+  /**
+   * Send the run mode, operational state and charge state that the latest
+   * reports add up to, skipping any that have not changed. All the sends
+   * start before any is awaited, so two reports arriving together cannot
+   * finish in the wrong order and leave an older value in place.
+   */
+  private async syncStatus(): Promise<void> {
+    if (!this.lastCleanReport && !this.lastChargeState) {
+      return
+    }
+    const operationalState = this.operationalStateNow()
+    // A paused clean is still a clean, so the run mode stays Cleaning
+    const runMode = [1, 2].includes(operationalState) ? 1 : 0
+    this.currentOperationalState = operationalState
+    const batChargeState = this.batChargeState()
+
+    const updates: Promise<void>[] = []
+    if (runMode !== this.sentRunMode) {
+      this.sentRunMode = runMode
+      updates.push(this.updateState('rvcRunMode', { currentMode: runMode }))
+    }
+    if (operationalState !== this.sentOperationalState) {
+      this.sentOperationalState = operationalState
+      updates.push(this.updateState('rvcOperationalState', { operationalState }))
+    }
+    if (batChargeState !== this.sentBatChargeState) {
+      this.sentBatChargeState = batChargeState
+      updates.push(this.updateState('powerSource', { batChargeState }))
+    }
+    await Promise.all(updates)
   }
 
   private async onBatteryInfo(newVal: number): Promise<void> {
@@ -374,11 +422,13 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
     // batChargeLevel: 0 = OK, 1 = Warning, 2 = Critical
     const batChargeLevel = newVal <= 10 ? 2 : newVal <= 20 ? 1 : 0
     this.lastBatteryPercent = newVal
+    const batChargeState = this.batChargeState()
+    this.sentBatChargeState = batChargeState
     await this.updateState('powerSource', {
       status: 1, // active
       batPercentRemaining,
       batChargeLevel,
-      batChargeState: this.batChargeState(),
+      batChargeState,
     })
   }
 
@@ -530,10 +580,12 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
 
   public async updateOperationalState(state: number): Promise<void> {
     this.currentOperationalState = state
+    this.sentOperationalState = state
     await this.updateState('rvcOperationalState', { operationalState: state })
   }
 
   public async updateRunMode(mode: number): Promise<void> {
+    this.sentRunMode = mode
     await this.updateState('rvcRunMode', { currentMode: mode })
   }
 

@@ -87,3 +87,80 @@ describe('ecovacsRoboticVacuumAccessory battery charge state (#322)', () => {
     expect(levels).toEqual([80, 82]) // half-percent units
   })
 })
+
+// Every value of one attribute the vacuum sent to Matter, in order
+function sent(updateAccessoryState: ReturnType<typeof vi.fn>, cluster: string, attribute: string): unknown[] {
+  return updateAccessoryState.mock.calls
+    .filter(([, c, attributes]) => c === cluster && attribute in attributes)
+    .map(([, , attributes]) => attributes[attribute])
+}
+
+// The library sends a CleanReport and then its last ChargeState together,
+// in the same tick, every time the robot reports its clean state
+function cleanInfo(control: EventEmitter, cleanReport: string, chargeState: string) {
+  control.emit('CleanReport', cleanReport)
+  control.emit('ChargeState', chargeState)
+}
+
+describe('ecovacsRoboticVacuumAccessory cleaning state (#322)', () => {
+  it('stays Running while cleaning, even though ChargeState says idle', async () => {
+    const { vacuum, control, updateAccessoryState } = makeVacuum()
+    await vacuum.markRegistered()
+
+    // Sitting on the dock, full
+    control.emit('BatteryInfo', 100)
+    cleanInfo(control, 'idle', 'idle')
+    await settle()
+    updateAccessoryState.mockClear()
+
+    // The reporter's log: cleaning starts while the library still has
+    // 'charging' cached, then a lone ChargeState 'idle', then a poll
+    cleanInfo(control, 'auto', 'charging')
+    await settle()
+    control.emit('ChargeState', 'idle')
+    await settle()
+    control.emit('ChargeState', 'idle')
+    control.emit('CleanSpeed', 3)
+    cleanInfo(control, 'auto', 'idle')
+    control.emit('BatteryInfo', 99)
+    await settle()
+
+    // Never Docked or Charging, never "fully charged", and the run mode is Cleaning
+    expect(sent(updateAccessoryState, 'rvcOperationalState', 'operationalState')).toEqual([1])
+    expect(sent(updateAccessoryState, 'rvcRunMode', 'currentMode')).toEqual([1])
+    expect(sent(updateAccessoryState, 'powerSource', 'batChargeState')).not.toContain(2)
+    expect(lastBatChargeState(updateAccessoryState)).toBe(3) // IsNotCharging
+    expect(sent(updateAccessoryState, 'powerSource', 'batPercentRemaining')).toEqual([198])
+  })
+
+  it('follows the robot home, onto the charger and to a full battery', async () => {
+    const { vacuum, control, updateAccessoryState } = makeVacuum()
+    await vacuum.markRegistered()
+
+    control.emit('BatteryInfo', 80)
+    cleanInfo(control, 'auto', 'idle')
+    await settle()
+
+    control.emit('CleanReport', 'pause')
+    await settle()
+    expect(sent(updateAccessoryState, 'rvcOperationalState', 'operationalState').at(-1)).toBe(2) // Paused
+    expect(sent(updateAccessoryState, 'rvcRunMode', 'currentMode').at(-1)).toBe(1) // still Cleaning
+
+    cleanInfo(control, 'returning', 'returning')
+    await settle()
+    expect(sent(updateAccessoryState, 'rvcOperationalState', 'operationalState').at(-1)).toBe(64) // SeekingCharger
+    expect(sent(updateAccessoryState, 'rvcRunMode', 'currentMode').at(-1)).toBe(0) // Idle
+
+    control.emit('ChargeState', 'charging')
+    cleanInfo(control, 'idle', 'charging')
+    await settle()
+    expect(sent(updateAccessoryState, 'rvcOperationalState', 'operationalState').at(-1)).toBe(65) // Charging
+    expect(lastBatChargeState(updateAccessoryState)).toBe(1) // IsCharging
+
+    control.emit('BatteryInfo', 100)
+    control.emit('ChargeState', 'idle')
+    await settle()
+    expect(sent(updateAccessoryState, 'rvcOperationalState', 'operationalState').at(-1)).toBe(66) // Docked
+    expect(lastBatChargeState(updateAccessoryState)).toBe(2) // IsAtFullCharge
+  })
+})

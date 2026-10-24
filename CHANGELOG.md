@@ -8,6 +8,7 @@ All notable changes to `@homebridge-plugins/homebridge-ecovacs` will be document
 
 - ci: update github actions to their latest versions (#321)
 - fix: tell the home app when a matter vacuum is charging or fully charged
+- fix(matter): keep a cleaning vacuum shown as cleaning, not docked, between polls
 
 ## v8.2.4 (2026-10-18)
 
