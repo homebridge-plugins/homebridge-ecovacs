@@ -25,8 +25,9 @@ import type { API, Logger, MatterRequests } from 'homebridge'
 import platformLang from '../utils/lang-en.js'
 import { BaseMatterAccessory } from './BaseMatterAccessory.js'
 
-// Matter mode tags: Quiet and Max are common tags, DeepClean and Vacuum are
-// the robot vacuum clean mode tags
+// Matter mode tags: Auto, Quiet and Max are common tags, DeepClean and Vacuum
+// are the robot vacuum clean mode tags
+const AUTO = 0
 const QUIET = 2
 const MAX = 7
 const DEEP_CLEAN = 16384
@@ -37,6 +38,10 @@ const VACUUM = 16385
  * and very high (CleanSpeed 1 to 4) - while older ones have only normal and
  * high. Offering just two left the Home app with a single "Max" choice on the
  * newer ones (#322). The mode numbers 0 and 3 are kept from the earlier list.
+ *
+ * The Home app names each level from its tags and leaves out a level with only
+ * the Vacuum tag, so every level carries a power tag too - Standard has Auto,
+ * the nearest common tag to a normal setting (#322)
  */
 function cleanModesFor(isV2: boolean) {
   if (!isV2) {
@@ -71,6 +76,7 @@ function cleanModesFor(isV2: boolean) {
       label: 'Standard',
       mode: 0,
       modeTags: [
+        { value: AUTO },
         { value: VACUUM },
       ],
     },

@@ -11,6 +11,7 @@ All notable changes to `@homebridge-plugins/homebridge-ecovacs` will be document
 - fix(matter): keep a cleaning vacuum shown as cleaning, not docked, between polls
 - fix(matter): show an area clean as cleaning on robots that report the v2 area modes
 - feat(matter): offer all four suction levels on newer robots, not just max (#322)
+- fix(matter): tag the standard suction level, so the home app lists it (#322)
 
 ## v8.2.4 (2026-10-18)
 
