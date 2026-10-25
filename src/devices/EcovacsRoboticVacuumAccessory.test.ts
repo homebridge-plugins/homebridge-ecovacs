@@ -207,6 +207,14 @@ describe('ecovacsRoboticVacuumAccessory suction levels (#322)', () => {
     expect(cleanModes(vacuum).every(mode => mode.modeTags.some(tag => tag.value === 16385))).toBe(true)
   })
 
+  it('gives every level a tag besides Vacuum, as Home leaves out a level without one', () => {
+    const { vacuum } = makeVacuum()
+
+    // Home showed Quiet, Max and Max+ but not Standard, the one level that
+    // carried only the Vacuum tag
+    expect(cleanModes(vacuum).every(mode => mode.modeTags.some(tag => tag.value !== 16385))).toBe(true)
+  })
+
   it('shows the speed the robot reports as the matching level', async () => {
     const { vacuum, control, updateAccessoryState } = makeVacuum()
     await vacuum.markRegistered()
