@@ -78,7 +78,7 @@
     "node-persist": "^4.0.4"
   },
   "devDependencies": {
-    "@antfu/eslint-config": "^9.5.1",
+    "@antfu/eslint-config": "^10.0.0",
     "@types/node": "^26.6.5",
     "@vitest/coverage-v8": "^5.0.5",
     "homebridge": "^2.4.0",
