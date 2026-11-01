@@ -21,6 +21,7 @@ Homebridge plugin to integrate Ecovacs Deebot or Yeedi devices into HomeKit
 - This plugin allows you to view and control your Ecovacs or Yeedi devices within HomeKit. The plugin:
   - requires your Ecovacs or Yeedi credentials to function
   - uses a cloud-based connection (i.e. requires the internet)
+  - supports Matter: on Homebridge v2 with Matter enabled, each vacuum is added as a Matter robot vacuum instead, with run and clean modes, room cleaning, pause, resume, go home and battery level - the HomeKit-only extras (the Eve buttons and extra sensors) are not created
 
 ### Prerequisites
 

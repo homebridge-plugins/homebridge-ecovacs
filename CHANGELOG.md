@@ -13,6 +13,7 @@ All notable changes to `@homebridge-plugins/homebridge-ecovacs` will be document
 - chore(deps): dependency updates
 - feat(matter): offer all four suction levels on newer robots, not just max (#322)
 - fix(matter): tag the standard suction level, so the home app lists it (#322)
+- docs: describe matter mode in the readme
 
 ## v8.2.4 (2026-10-18)
 
