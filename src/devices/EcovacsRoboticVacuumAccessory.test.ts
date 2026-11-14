@@ -9,12 +9,19 @@ function makeVacuum(isV2 = true) {
   const updateAccessoryState = vi.fn(async () => {})
   const api = {
     matter: {
-      uuid: { generate: (id: string) => `uuid-${id}` },
+      uuid: {
+        generate: (id: string) => `uuid-${id}`,
+      },
       deviceTypes: { RoboticVacuumCleaner: {} },
       updateAccessoryState,
     },
   }
-  const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+  const log = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  }
   const vacuum = new EcovacsRoboticVacuumAccessory(api as any, log as any, {
     did: 'abc-123',
     nick: 'Deebot',
@@ -22,7 +29,9 @@ function makeVacuum(isV2 = true) {
     deviceModel: 'X1 Plus',
     isV2,
   } as any)
-  const control = Object.assign(new EventEmitter(), { run: vi.fn() })
+  const control = Object.assign(new EventEmitter(), {
+    run: vi.fn(),
+  })
   vacuum.connectControl(control)
   return { vacuum, control, updateAccessoryState }
 }

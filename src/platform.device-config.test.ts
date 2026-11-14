@@ -18,9 +18,13 @@ describe('warnAboutUnmatchedDeviceConfig', () => {
   }
 
   it('names the ids that matched nothing, and the ones that exist', () => {
-    const { platform, warn } = makePlatform({ typo123: { pollInterval: 30 } })
+    const { platform, warn } = makePlatform({
+      typo123: { pollInterval: 30 },
+    })
 
-    platform.warnAboutUnmatchedDeviceConfig([{ did: 'real456' }])
+    platform.warnAboutUnmatchedDeviceConfig([
+      { did: 'real456' },
+    ])
 
     expect(warn).toHaveBeenCalledTimes(1)
     const message = warn.mock.calls[0].join(' ')
@@ -29,9 +33,14 @@ describe('warnAboutUnmatchedDeviceConfig', () => {
   })
 
   it('says nothing when every configured id matches a device', () => {
-    const { platform, warn } = makePlatform({ real456: { pollInterval: 30 } })
+    const { platform, warn } = makePlatform({
+      real456: { pollInterval: 30 },
+    })
 
-    platform.warnAboutUnmatchedDeviceConfig([{ did: 'real456' }, { did: 'other789' }])
+    platform.warnAboutUnmatchedDeviceConfig([
+      { did: 'real456' },
+      { did: 'other789' },
+    ])
 
     expect(warn).not.toHaveBeenCalled()
   })
@@ -39,7 +48,9 @@ describe('warnAboutUnmatchedDeviceConfig', () => {
   it('says nothing when no devices are configured at all', () => {
     const { platform, warn } = makePlatform({})
 
-    platform.warnAboutUnmatchedDeviceConfig([{ did: 'real456' }])
+    platform.warnAboutUnmatchedDeviceConfig([
+      { did: 'real456' },
+    ])
 
     expect(warn).not.toHaveBeenCalled()
   })

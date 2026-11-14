@@ -58,7 +58,9 @@ export abstract class BaseMatterAccessory implements MatterAccessory {
         await this.api.matter?.updateAccessoryState(this.UUID, pending.cluster, pending.attributes, pending.partId)
         this.log.debug(`[${this.displayName}] Flushed queued ${pending.cluster} state:`, pending.attributes)
       } catch (err) {
-        this.log.error(`[${this.displayName}] Failed to flush queued ${pending.cluster} state: ${err instanceof Error ? err.message : err}`)
+        this.log.error(`[${this.displayName}] Failed to flush queued ${pending.cluster} state: ${err instanceof Error
+          ? err.message
+          : err}`)
       }
     }
     this._pendingUpdates = []
@@ -123,7 +125,9 @@ export abstract class BaseMatterAccessory implements MatterAccessory {
       await this.api.matter?.updateAccessoryState(this.UUID, cluster, attributes, partId)
       this.log.debug(`[${this.displayName}] Updated ${cluster} state:`, attributes)
     } catch (err) {
-      this.log.error(`[${this.displayName}] Failed to update ${cluster} state: ${err instanceof Error ? err.message : err}`)
+      this.log.error(`[${this.displayName}] Failed to update ${cluster} state: ${err instanceof Error
+        ? err.message
+        : err}`)
     }
   }
 
@@ -142,7 +146,9 @@ export abstract class BaseMatterAccessory implements MatterAccessory {
     try {
       return await this.api.matter?.getAccessoryState(this.UUID, cluster, partId)
     } catch (err) {
-      this.log.error(`[${this.displayName}] Failed to read ${cluster} state: ${err instanceof Error ? err.message : err}`)
+      this.log.error(`[${this.displayName}] Failed to read ${cluster} state: ${err instanceof Error
+        ? err.message
+        : err}`)
       return undefined
     }
   }

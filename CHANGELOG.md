@@ -15,6 +15,7 @@ All notable changes to `@homebridge-plugins/homebridge-ecovacs` will be document
 - docs: describe matter mode in the readme
 - chore: leave CLAUDE.md out of the published package
 - ci: publish releases with node.js v26, the current lts
+- chore(deps): dependency updates
 
 ## v8.2.4 (2026-10-18)
 

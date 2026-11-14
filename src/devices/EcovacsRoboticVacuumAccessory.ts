@@ -209,9 +209,27 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
         // ── Run Mode ──────────────────────────────────────────────────
         rvcRunMode: {
           supportedModes: [
-            { label: 'Idle', mode: 0, modeTags: [{ value: 16384 }] },
-            { label: 'Cleaning', mode: 1, modeTags: [{ value: 16385 }] },
-            { label: 'Mapping', mode: 2, modeTags: [{ value: 16386 }] },
+            {
+              label: 'Idle',
+              mode: 0,
+              modeTags: [
+                { value: 16384 },
+              ],
+            },
+            {
+              label: 'Cleaning',
+              mode: 1,
+              modeTags: [
+                { value: 16385 },
+              ],
+            },
+            {
+              label: 'Mapping',
+              mode: 2,
+              modeTags: [
+                { value: 16386 },
+              ],
+            },
           ],
           currentMode: 0,
         },
@@ -470,7 +488,9 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
     }
     const operationalState = this.operationalStateNow()
     // A paused clean is still a clean, so the run mode stays Cleaning
-    const runMode = [1, 2].includes(operationalState) ? 1 : 0
+    const runMode = [1, 2].includes(operationalState)
+      ? 1
+      : 0
     this.currentOperationalState = operationalState
     const batChargeState = this.batChargeState()
 
@@ -498,7 +518,11 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
     // batPercentRemaining uses half-percent units (0-200)
     const batPercentRemaining = newVal * 2
     // batChargeLevel: 0 = OK, 1 = Warning, 2 = Critical
-    const batChargeLevel = newVal <= 10 ? 2 : newVal <= 20 ? 1 : 0
+    const batChargeLevel = newVal <= 10
+      ? 2
+      : newVal <= 20
+        ? 1
+        : 0
     this.lastBatteryPercent = newVal
     const batChargeState = this.batChargeState()
     this.sentBatChargeState = batChargeState
@@ -673,7 +697,9 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
     const supportedMaps = Array.from(this.mapsById.entries(), ([mapId, name]) => ({ mapId, name }))
     const supportedAreas = Array.from(this.areasById.entries(), ([areaId, { mapId, name }]) => ({
       areaId,
-      mapId: this.mapsById.size > 0 ? mapId : null,
+      mapId: this.mapsById.size > 0
+        ? mapId
+        : null,
       areaInfo: {
         locationInfo: { locationName: name },
       },
