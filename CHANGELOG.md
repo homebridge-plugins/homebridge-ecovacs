@@ -14,6 +14,7 @@ All notable changes to `@homebridge-plugins/homebridge-ecovacs` will be document
 - fix(matter): tag the standard suction level, so the home app lists it (#322)
 - docs: describe matter mode in the readme
 - chore: leave CLAUDE.md out of the published package
+- ci: publish releases with node.js v26, the current lts
 
 ## v8.2.4 (2026-10-18)
 
