@@ -5,8 +5,16 @@ import { describe, expect, it, vi } from 'vitest'
 import { EcovacsRoboticVacuumAccessory } from './EcovacsRoboticVacuumAccessory.js'
 
 // Enough of the Homebridge API for the vacuum to build itself and push state
-function makeVacuum(isV2 = true) {
-  const updateAccessoryState = vi.fn(async () => {})
+function makeVacuum(isV2 = true, saved: Record<string, Record<string, unknown>> = {}) {
+  // Matter keeps cluster state, and saves it over a restart
+  const state: Record<string, Record<string, unknown>> = structuredClone(saved)
+  const updateAccessoryState = vi.fn(async (_uuid: string, cluster: string, attributes: Record<string, unknown>) => {
+    state[cluster] = {
+      ...state[cluster],
+      ...attributes,
+    }
+  })
+  const getAccessoryState = vi.fn(async (_uuid: string, cluster: string) => state[cluster])
   const api = {
     matter: {
       uuid: {
@@ -14,6 +22,7 @@ function makeVacuum(isV2 = true) {
       },
       deviceTypes: { RoboticVacuumCleaner: {} },
       updateAccessoryState,
+      getAccessoryState,
     },
   }
   const log = {
@@ -33,7 +42,12 @@ function makeVacuum(isV2 = true) {
     run: vi.fn(),
   })
   vacuum.connectControl(control)
-  return { vacuum, control, updateAccessoryState }
+  return {
+    vacuum,
+    control,
+    updateAccessoryState,
+    state,
+  }
 }
 
 // Lets the async event handlers run
@@ -267,6 +281,13 @@ function twoFloors(control: EventEmitter & { is_ready?: boolean }) {
   control.emit('MapSpotAreaInfo', { mapID: '2', mapSpotAreaID: '3', mapSpotAreaName: 'Bedroom' })
 }
 
+// Pick rooms the way Home does: the plugin's handler runs, then Matter saves
+// the selection
+async function select(vacuum: any, state: Record<string, Record<string, unknown>>, newAreas: number[]) {
+  await vacuum.handlers.serviceArea.selectAreas({ newAreas })
+  state.serviceArea = { ...state.serviceArea, selectedAreas: newAreas }
+}
+
 // Start a run the way Home does, answering the robot's map check at once
 async function startRun(vacuum: any, control: EventEmitter, currentMap = '1') {
   const run = vacuum.handlers.rvcRunMode.changeToMode({ newMode: 1 })
@@ -277,12 +298,10 @@ async function startRun(vacuum: any, control: EventEmitter, currentMap = '1') {
 
 describe('ecovacsRoboticVacuumAccessory room cleaning (#328)', () => {
   it('refuses a start when every picked room is on another floor', async () => {
-    const { vacuum, control } = makeVacuum()
+    const { vacuum, control, state } = makeVacuum()
     twoFloors(control)
     await settle()
-    await vacuum.handlers.serviceArea.selectAreas({
-      newAreas: [1003],
-    })
+    await select(vacuum, state, [1003])
 
     await expect(startRun(vacuum, control)).rejects.toThrow('None of the selected areas')
     expect(control.run).not.toHaveBeenCalledWith('SpotArea_V2', expect.anything())
@@ -290,14 +309,41 @@ describe('ecovacsRoboticVacuumAccessory room cleaning (#328)', () => {
   })
 
   it('cleans a picked room on the floor the robot is on', async () => {
-    const { vacuum, control } = makeVacuum()
+    const { vacuum, control, state } = makeVacuum()
     twoFloors(control)
     await settle()
-    await vacuum.handlers.serviceArea.selectAreas({
-      newAreas: [3],
-    })
+    await select(vacuum, state, [3])
 
     await startRun(vacuum, control)
     expect(control.run).toHaveBeenCalledWith('SpotArea_V2', '3')
+  })
+
+  it('still cleans the picked rooms after a restart', async () => {
+    // Matter brought the selection back from storage; the plugin starts empty
+    const { vacuum, control } = makeVacuum(true, {
+      serviceArea: {
+        selectedAreas: [3],
+      },
+    })
+    twoFloors(control)
+    await settle()
+
+    await startRun(vacuum, control)
+    expect(control.run).toHaveBeenCalledWith('SpotArea_V2', '3')
+    expect(control.run).not.toHaveBeenCalledWith('Clean_V2')
+  })
+
+  it('leaves the selection to Matter, so a rejected pick changes nothing', async () => {
+    const { vacuum, control, updateAccessoryState } = makeVacuum()
+    await vacuum.markRegistered()
+    twoFloors(control)
+    await settle()
+    updateAccessoryState.mockClear()
+
+    await vacuum.handlers.serviceArea.selectAreas({
+      newAreas: [3, 99],
+    })
+    await vacuum.handlers.serviceArea.skipArea({ skippedArea: 3 })
+    expect(updateAccessoryState).not.toHaveBeenCalled()
   })
 })

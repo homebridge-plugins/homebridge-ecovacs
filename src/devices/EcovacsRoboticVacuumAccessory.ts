@@ -183,8 +183,6 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
   private currentMapId?: number
   /** The last map/area list sent, so re-reading unchanged maps sends nothing */
   private sentServiceAreas = ''
-  /** Matter area IDs chosen with selectAreas, cleaned on the next start (empty = everywhere) */
-  private selectedAreaIds: number[] = []
   /** One-time note flag for the optional canvas module being unbuilt */
   private canvasNoteShown = false
 
@@ -646,25 +644,18 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
    * Matter: SelectAreas only sets which areas the next run covers - the run is
    * started separately with rvcRunMode.changeToMode(Cleaning), which is what
    * Apple Home sends when you press start. Controllers only send SelectAreas
-   * when the selection changes, so the selection is kept until replaced.
+   * when the selection changes. Matter checks the areas and saves the selection
+   * once this returns, and keeps it over a restart, so the start reads it from
+   * there rather than from a copy here that a restart would empty
    */
   private async handleSelectAreas(request: MatterRequests.SelectAreas): Promise<void> {
     this.logInfo(`serviceArea.selectAreas → ${JSON.stringify(request.newAreas)}`)
-    const known: number[] = []
-    for (const areaId of request.newAreas ?? []) {
-      if (this.areasById.has(areaId)) {
-        known.push(areaId)
-      } else {
-        this.logWarn(`selectAreas: unknown area ID ${areaId}, skipping`)
-      }
-    }
-    this.selectedAreaIds = known
-    await this.updateState('serviceArea', { selectedAreas: known })
   }
 
   /** Start a run: the selected areas as a spot area clean, or a full clean if none are selected. */
   private async startCleaning(): Promise<void> {
-    if (this.selectedAreaIds.length === 0) {
+    const selectedAreaIds = (await this.readState('serviceArea'))?.selectedAreas ?? []
+    if (selectedAreaIds.length === 0) {
       this.logDebug('No areas selected — starting full auto clean.')
       this.control.run(this.isV2 ? 'Clean_V2' : 'Clean')
       return
@@ -681,7 +672,7 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
     // Ecovacs only cleans spot areas of the map the robot is on
     const validAreas: number[] = []
     const ecovacsAreaIds: number[] = []
-    for (const areaId of this.selectedAreaIds) {
+    for (const areaId of selectedAreaIds) {
       const area = this.areasById.get(areaId)
       if (!area) {
         this.logWarn(`Selected area ID ${areaId} no longer exists, skipping`)
@@ -750,23 +741,13 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
     })
   }
 
+  /**
+   * Matter checks the skipped area is one of the selected ones. Ecovacs has no
+   * way to skip a room part way through a run, and changing the selection here
+   * made Matter's own check fail, as the area was then no longer selected
+   */
   private async handleSkipArea(request: MatterRequests.SkipArea): Promise<void> {
     this.logInfo(`serviceArea.skipArea → area ${request.skippedArea}`)
-    if (!this.isDeviceReady()) {
-      return
-    }
-
-    if (!this.areasById.has(request.skippedArea)) {
-      this.logWarn(`skipArea: unknown area ID ${request.skippedArea}`)
-      return
-    }
-
-    // Remove the skipped area from the selection
-    const remaining = this.selectedAreaIds.filter(id => id !== request.skippedArea)
-    this.selectedAreaIds = remaining
-
-    this.logDebug(`Skipping area ${request.skippedArea}, remaining: [${remaining.join(', ')}]`)
-    await this.updateState('serviceArea', { selectedAreas: remaining })
   }
 
   // ──────────────────────────────────────────────────────────────────────────
