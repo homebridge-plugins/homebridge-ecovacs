@@ -2,6 +2,12 @@
 
 All notable changes to `@homebridge-plugins/homebridge-ecovacs` will be documented in this file.
 
+## v8.3.1 (Pending Release)
+
+### Changed
+
+- fix(ui): make the Reset Pairing button work in the settings iframe (#329) (@tplnet)
+
 ## v8.3.0 (2026-11-14)
 
 ### Changed

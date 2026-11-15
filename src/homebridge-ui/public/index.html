@@ -755,13 +755,38 @@
     }
   })();
 
+  // The plugin settings page runs in a sandboxed iframe where window.confirm()
+  // is blocked and returns false without showing anything, so the button did
+  // nothing. Ask for confirmation in the page instead: the first click arms
+  // the button and shows what will happen, a second click within 10s resets.
   resetMatterDevice = async (uuid, displayName, commissioned, btn) => {
-    const message = commissioned
-      ? `⚠ REQUIRED STEPS — follow in order:\n\n1. Remove "${displayName}" from your Home app (or Matter controller) FIRST\n2. Click OK to clear the pairing data on the Homebridge side\n3. Restart Homebridge\n4. Re-pair using the new QR code\n\nSkipping step 1 will cause repeated "Fabric not found" errors.`
-      : `Reset pairing for "${displayName}"?\n\nThis clears commissioning data so the device can be re-paired.\nRestart Homebridge after resetting to get a new QR code.`;
-    if (!confirm(message)) {
+    if (btn.dataset.armed !== "true") {
+      btn.dataset.armed = "true";
+      btn.dataset.label = btn.textContent;
+      btn.textContent = "Click again to confirm reset";
+      btn.classList.add("btn-danger");
+      btn.classList.remove("btn-outline-secondary");
+      const note = document.createElement("p");
+      note.className = "mt-1 mb-0 small text-danger";
+      note.dataset.resetNote = uuid;
+      note.textContent = commissioned
+        ? `Make sure "${displayName}" has been removed from your Home app (or Matter controller) first, otherwise you will see repeated "Fabric not found" errors. Restart Homebridge afterwards and re-pair with the new QR code.`
+        : `This clears the commissioning data for "${displayName}". Restart Homebridge afterwards to get a new QR code.`;
+      btn.insertAdjacentElement("afterend", note);
+      btn.dataset.timer = String(setTimeout(() => {
+        btn.dataset.armed = "false";
+        btn.textContent = btn.dataset.label;
+        if (!commissioned) {
+          btn.classList.remove("btn-danger");
+          btn.classList.add("btn-outline-secondary");
+        }
+        note.remove();
+      }, 10000));
       return;
     }
+    clearTimeout(Number(btn.dataset.timer));
+    btn.dataset.armed = "false";
+    document.querySelector(`[data-reset-note="${uuid}"]`)?.remove();
     btn.disabled = true;
     btn.textContent = "Resetting…";
     try {
