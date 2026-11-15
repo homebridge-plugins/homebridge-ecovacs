@@ -825,13 +825,11 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
     // added or removed, so a saved scene still names the same room. A new map
     // gets the lowest free range, so a single-map robot keeps its plain
     // Ecovacs area IDs
-    const areas = Array.from(this.ecovacsAreas.values())
+    // A room is only sent once its map is known. Matter refuses the whole
+    // list if any room has no map while maps are listed
+    const areas = Array.from(this.ecovacsAreas.values()).filter(area => this.mapsById.has(area.mapId))
     const mapSlots = await this.loadMapSlots()
-    const mapIds = new Set([
-      ...this.mapsById.keys(),
-      ...areas.map(a => a.mapId),
-    ])
-    for (const mapId of Array.from(mapIds).sort((a, b) => a - b)) {
+    for (const mapId of Array.from(this.mapsById.keys()).sort((a, b) => a - b)) {
       if (!mapSlots.has(mapId)) {
         const taken = new Set(mapSlots.values())
         let slot = 0
@@ -845,9 +843,7 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
 
     const supportedAreas = Array.from(this.areasById.entries(), ([areaId, { mapId, name }]) => ({
       areaId,
-      mapId: this.mapsById.has(mapId)
-        ? mapId
-        : null,
+      mapId,
       areaInfo: {
         locationInfo: { locationName: name },
       },

@@ -9,6 +9,12 @@ function makeVacuum(isV2 = true, saved: Record<string, Record<string, unknown>> 
   // Matter keeps cluster state, and saves it over a restart
   const state: Record<string, Record<string, unknown>> = structuredClone(saved)
   const updateAccessoryState = vi.fn(async (_uuid: string, cluster: string, attributes: Record<string, unknown>) => {
+    // Matter's own rule: no room without a map once maps are listed
+    const maps = (attributes.supportedMaps ?? state[cluster]?.supportedMaps ?? []) as unknown[]
+    const areas = (attributes.supportedAreas ?? []) as { mapId: number | null }[]
+    if (cluster === 'serviceArea' && maps.length > 0 && areas.some(area => area.mapId === null)) {
+      throw new Error('Areas must not have a null mapId when supportedMaps is defined')
+    }
     state[cluster] = {
       ...state[cluster],
       ...attributes,
@@ -45,6 +51,7 @@ function makeVacuum(isV2 = true, saved: Record<string, Record<string, unknown>> 
   return {
     vacuum,
     control,
+    log,
     updateAccessoryState,
     state,
   }
@@ -446,5 +453,17 @@ describe('ecovacsRoboticVacuumAccessory room ids across map changes (#328)', () 
       ],
     })
     expect(await roomList(state)).toEqual({ 3: 'Kitchen', 1003: 'Bedroom' })
+  })
+})
+
+describe('ecovacsRoboticVacuumAccessory room list checks (#328)', () => {
+  it('leaves out a room whose map is not known, so the list is not refused', async () => {
+    const { vacuum, control, state, log } = makeVacuum()
+    await vacuum.markRegistered()
+    twoFloors(control)
+    control.emit('MapSpotAreaInfo', { mapID: '9', mapSpotAreaID: '1', mapSpotAreaName: 'Shed' })
+
+    expect(await roomList(state)).toEqual({ 3: 'Kitchen', 1003: 'Bedroom' })
+    expect(log.error).not.toHaveBeenCalled()
   })
 })

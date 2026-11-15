@@ -12,6 +12,7 @@ All notable changes to `@homebridge-plugins/homebridge-ecovacs` will be document
 - fix(matter): refuse a start that cannot clean, so home does not show cleaning
 - fix(matter): clean the rooms picked in home, even after a restart
 - fix(matter): keep each floor's room ids when a map is added or removed
+- fix(matter): leave out a room whose map is unknown, so the room list is not refused
 
 ## v8.3.0 (2026-11-14)
 
