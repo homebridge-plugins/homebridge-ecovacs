@@ -181,6 +181,12 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
   private areasById = new Map<number, { mapId: number, ecovacsAreaId: number, name: string }>()
   /** The map the robot is currently localised on, if known */
   private currentMapId?: number
+  /**
+   * Which block of area IDs each map has (map ID → slot), read back once from
+   * the area list Matter saved, so a map keeps its block when another map is
+   * added or removed. A slot stays taken until a restart once given out
+   */
+  private mapSlotsLoaded?: Promise<Map<number, number>>
   /** The last map/area list sent, so re-reading unchanged maps sends nothing */
   private sentServiceAreas = ''
   /** One-time note flag for the optional canvas module being unbuilt */
@@ -379,6 +385,19 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
       if (!data?.maps) {
         return
       }
+      // The reply lists every map, so forget any map that has been deleted
+      const listed = new Set(Object.values(data.maps).map((m: any) => Number(m.mapID)))
+      for (const mapId of this.mapsById.keys()) {
+        if (!listed.has(mapId)) {
+          this.mapsById.delete(mapId)
+        }
+      }
+      for (const [key, area] of this.ecovacsAreas) {
+        if (!listed.has(area.mapId)) {
+          this.ecovacsAreas.delete(key)
+        }
+      }
+
       // Register each map and request its spot areas
       Object.values(data.maps).forEach((m: any) => {
         const mapId = Number(m.mapID)
@@ -393,6 +412,9 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
         this.logDebug(`Map '${m.mapName}' (${mapId}): current=${m.mapIsCurrentMap}, built=${m.mapIsBuilt}, status=${m.mapStatus}`)
         control.run('GetSpotAreas', m.mapID)
       })
+      // Send the maps now, so a deleted map goes and a new one with no rooms yet
+      // still appears
+      void this.flushServiceAreas()
     })
 
     control.on('CurrentMapMID', (mapId: any) => {
@@ -407,6 +429,20 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
       if (!data?.mapSpotAreas) {
         return
       }
+      // The reply lists every area on the map, so forget any that were deleted
+      const mapId = Number(data.mapID)
+      const listed = new Set(Object.values(data.mapSpotAreas).map((area: any) => Number(area.mapSpotAreaID)))
+      let removed = false
+      for (const [key, area] of this.ecovacsAreas) {
+        if (area.mapId === mapId && !listed.has(area.ecovacsAreaId)) {
+          this.ecovacsAreas.delete(key)
+          removed = true
+        }
+      }
+      if (removed) {
+        void this.flushServiceAreas()
+      }
+
       // Request full info for each area
       Object.values(data.mapSpotAreas).forEach((area: any) => {
         control.run('GetSpotAreaInfo', data.mapID, area.mapSpotAreaID)
@@ -765,19 +801,46 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
     await this.updateState('rvcRunMode', { currentMode: mode })
   }
 
+  /** The map ID ranges from the area list Matter saved, read once. */
+  private loadMapSlots(): Promise<Map<number, number>> {
+    this.mapSlotsLoaded ??= (async () => {
+      const slots = new Map<number, number>()
+      const saved = (await this.readState('serviceArea'))?.supportedAreas ?? []
+      for (const { areaId, mapId } of saved) {
+        if (mapId !== null && mapId !== undefined && !slots.has(mapId)) {
+          slots.set(mapId, Math.floor(areaId / AREA_ID_MAP_STRIDE))
+        }
+      }
+      return slots
+    })()
+    return this.mapSlotsLoaded
+  }
+
   /** Push the current map/area data into the Matter serviceArea cluster. */
   private async flushServiceAreas(): Promise<void> {
     const supportedMaps = Array.from(this.mapsById.entries(), ([mapId, name]) => ({ mapId, name }))
 
     // Ecovacs area IDs restart at 0 on every map, so give each map its own ID
-    // range. Maps are ordered by ID so the result is stable across restarts,
-    // and a single-map robot keeps its plain Ecovacs area IDs
+    // range. A map keeps the range it had before, even when another map is
+    // added or removed, so a saved scene still names the same room. A new map
+    // gets the lowest free range, so a single-map robot keeps its plain
+    // Ecovacs area IDs
     const areas = Array.from(this.ecovacsAreas.values())
+    const mapSlots = await this.loadMapSlots()
     const mapIds = new Set([
       ...this.mapsById.keys(),
       ...areas.map(a => a.mapId),
     ])
-    const mapSlots = new Map(Array.from(mapIds).sort((a, b) => a - b).map((mapId, slot) => [mapId, slot]))
+    for (const mapId of Array.from(mapIds).sort((a, b) => a - b)) {
+      if (!mapSlots.has(mapId)) {
+        const taken = new Set(mapSlots.values())
+        let slot = 0
+        while (taken.has(slot)) {
+          slot += 1
+        }
+        mapSlots.set(mapId, slot)
+      }
+    }
     this.areasById = new Map(areas.map(area => [mapSlots.get(area.mapId)! * AREA_ID_MAP_STRIDE + area.ecovacsAreaId, area]))
 
     const supportedAreas = Array.from(this.areasById.entries(), ([areaId, { mapId, name }]) => ({

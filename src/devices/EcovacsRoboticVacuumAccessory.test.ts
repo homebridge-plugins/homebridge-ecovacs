@@ -347,3 +347,104 @@ describe('ecovacsRoboticVacuumAccessory room cleaning (#328)', () => {
     expect(updateAccessoryState).not.toHaveBeenCalled()
   })
 })
+
+// The room list Matter was last sent: area ID → room name
+async function roomList(state: Record<string, Record<string, unknown>>) {
+  await settle()
+  await settle()
+  const areas = (state.serviceArea?.supportedAreas ?? []) as any[]
+  return Object.fromEntries(areas.map(area => [area.areaId, area.areaInfo.locationInfo.locationName]))
+}
+
+describe('ecovacsRoboticVacuumAccessory room ids across map changes (#328)', () => {
+  it('keeps each floor\'s room ids when a new map sorts before them', async () => {
+    // Before the restart: map 2 had the plain ids, map 5 the 1000 block
+    const { vacuum, control, state } = makeVacuum(true, {
+      serviceArea: {
+        supportedMaps: [
+          { mapId: 2, name: 'Ground' },
+          { mapId: 5, name: 'Upstairs' },
+        ],
+        supportedAreas: [
+          {
+            areaId: 3,
+            mapId: 2,
+            areaInfo: {
+              locationInfo: { locationName: 'Kitchen' },
+            },
+          },
+          {
+            areaId: 1003,
+            mapId: 5,
+            areaInfo: {
+              locationInfo: { locationName: 'Bedroom' },
+            },
+          },
+        ],
+      },
+    })
+    await vacuum.markRegistered()
+
+    // Now a basement map with a lower id has been added
+    control.emit('Maps', {
+      maps: [
+        { mapID: '1', mapName: 'Basement' },
+        { mapID: '2', mapName: 'Ground' },
+        { mapID: '5', mapName: 'Upstairs' },
+      ],
+    })
+    control.emit('MapSpotAreaInfo', { mapID: '1', mapSpotAreaID: '3', mapSpotAreaName: 'Gym' })
+    control.emit('MapSpotAreaInfo', { mapID: '2', mapSpotAreaID: '3', mapSpotAreaName: 'Kitchen' })
+    control.emit('MapSpotAreaInfo', { mapID: '5', mapSpotAreaID: '3', mapSpotAreaName: 'Bedroom' })
+
+    expect(await roomList(state)).toEqual({ 3: 'Kitchen', 1003: 'Bedroom', 2003: 'Gym' })
+  })
+
+  it('drops the rooms of a deleted map', async () => {
+    const { vacuum, control, state } = makeVacuum()
+    await vacuum.markRegistered()
+    twoFloors(control)
+    expect(await roomList(state)).toEqual({ 3: 'Kitchen', 1003: 'Bedroom' })
+
+    control.emit('Maps', {
+      maps: [
+        { mapID: '1', mapName: 'Ground', mapIsCurrentMap: true },
+      ],
+    })
+    expect(await roomList(state)).toEqual({ 3: 'Kitchen' })
+    expect(state.serviceArea.supportedMaps).toEqual([
+      { mapId: 1, name: 'Ground' },
+    ])
+  })
+
+  it('lists a new map before it has any rooms', async () => {
+    const { vacuum, control, state } = makeVacuum()
+    await vacuum.markRegistered()
+    control.emit('Maps', {
+      maps: [
+        { mapID: '1', mapName: 'Ground', mapIsCurrentMap: true },
+      ],
+    })
+    await settle()
+    await settle()
+    expect(state.serviceArea?.supportedMaps).toEqual([
+      { mapId: 1, name: 'Ground' },
+    ])
+  })
+
+  it('drops a deleted room', async () => {
+    const { vacuum, control, state } = makeVacuum()
+    await vacuum.markRegistered()
+    twoFloors(control)
+    control.emit('MapSpotAreaInfo', { mapID: '1', mapSpotAreaID: '4', mapSpotAreaName: 'Hall' })
+    expect(await roomList(state)).toEqual({ 3: 'Kitchen', 4: 'Hall', 1003: 'Bedroom' })
+
+    control.emit('MapSpotAreas', {
+      mapID: '1',
+      mapSpotAreas: [
+        { mapSpotAreaID: '3' },
+      ],
+    })
+    expect(await roomList(state)).toEqual({ 3: 'Kitchen', 1003: 'Bedroom' })
+  })
+})

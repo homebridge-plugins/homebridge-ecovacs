@@ -11,6 +11,7 @@ All notable changes to `@homebridge-plugins/homebridge-ecovacs` will be document
 - fix(matter): multi-floor room cleaning, clean selected areas on start (#328) (@tplnet)
 - fix(matter): refuse a start that cannot clean, so home does not show cleaning
 - fix(matter): clean the rooms picked in home, even after a restart
+- fix(matter): keep each floor's room ids when a map is added or removed
 
 ## v8.3.0 (2026-11-14)
 
