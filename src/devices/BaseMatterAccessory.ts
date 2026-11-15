@@ -97,37 +97,41 @@ export abstract class BaseMatterAccessory implements MatterAccessory {
   }
 
   /**
-   * Update cluster state attributes.
+   * Update cluster state attributes. Resolves false if Matter refused the
+   * update (the error is logged here), and true once sent or queued until
+   * registration.
    */
   protected async updateState<K extends keyof ClusterStateMap>(
     cluster: K,
     attributes: Partial<ClusterStateMap[K]>,
     partId?: string,
-  ): Promise<void>
+  ): Promise<boolean>
 
   protected async updateState(
     cluster: string,
     attributes: Record<string, unknown>,
     partId?: string,
-  ): Promise<void>
+  ): Promise<boolean>
 
   protected async updateState(
     cluster: string,
     attributes: Record<string, unknown>,
     partId?: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (!this._registered) {
       this.log.debug(`[${this.displayName}] Queuing ${cluster} state update — not yet registered with Matter server.`)
       this._pendingUpdates.push({ cluster, attributes, partId })
-      return
+      return true
     }
     try {
       await this.api.matter?.updateAccessoryState(this.UUID, cluster, attributes, partId)
       this.log.debug(`[${this.displayName}] Updated ${cluster} state:`, attributes)
+      return true
     } catch (err) {
       this.log.error(`[${this.displayName}] Failed to update ${cluster} state: ${err instanceof Error
         ? err.message
         : err}`)
+      return false
     }
   }
 

@@ -466,4 +466,40 @@ describe('ecovacsRoboticVacuumAccessory room list checks (#328)', () => {
     expect(await roomList(state)).toEqual({ 3: 'Kitchen', 1003: 'Bedroom' })
     expect(log.error).not.toHaveBeenCalled()
   })
+
+  it('sends the room list again after a failed update', async () => {
+    const { vacuum, control, state, updateAccessoryState, log } = makeVacuum()
+    await vacuum.markRegistered()
+    // Matter refuses the first room list only
+    const accept = updateAccessoryState.getMockImplementation()!
+    let refuse = true
+    updateAccessoryState.mockImplementation(async (uuid, cluster, attributes) => {
+      if (cluster === 'serviceArea' && 'supportedMaps' in attributes && refuse) {
+        refuse = false
+        throw new Error('busy')
+      }
+      return accept(uuid, cluster, attributes)
+    })
+    control.emit('Maps', {
+      maps: [
+        { mapID: '1', mapName: 'Ground', mapIsCurrentMap: true },
+      ],
+    })
+    await settle()
+    await settle()
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('busy'))
+    expect(state.serviceArea?.supportedMaps).toBeUndefined()
+
+    // The robot reports the same map again: nothing new, but the list was never taken
+    control.emit('Maps', {
+      maps: [
+        { mapID: '1', mapName: 'Ground', mapIsCurrentMap: true },
+      ],
+    })
+    await settle()
+    await settle()
+    expect(state.serviceArea?.supportedMaps).toEqual([
+      { mapId: 1, name: 'Ground' },
+    ])
+  })
 })

@@ -558,7 +558,7 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
     this.currentOperationalState = operationalState
     const batChargeState = this.batChargeState()
 
-    const updates: Promise<void>[] = []
+    const updates: Promise<boolean>[] = []
     if (runMode !== this.sentRunMode) {
       this.sentRunMode = runMode
       updates.push(this.updateState('rvcRunMode', { currentMode: runMode }))
@@ -854,8 +854,10 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
     if (serialised === this.sentServiceAreas) {
       return
     }
-    this.sentServiceAreas = serialised
-    await this.updateState('serviceArea', { supportedMaps, supportedAreas })
+    // Only remembered once Matter took it, so a refused list is tried again
+    if (await this.updateState('serviceArea', { supportedMaps, supportedAreas })) {
+      this.sentServiceAreas = serialised
+    }
   }
 
   // ──────────────────────────────────────────────────────────────────────────
