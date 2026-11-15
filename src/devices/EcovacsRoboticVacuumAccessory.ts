@@ -10,7 +10,10 @@
  *                         together (Stopped / Running / Paused /
  *                         SeekingCharger / Charging / Docked)
  *   rvcCleanMode ← CleanSpeed events (Quiet / Standard / Max / Max+, or Vacuum / Max Clean on older robots)
- *   serviceArea ← configured spot-area IDs in plugin config
+ *   serviceArea ← spot areas of every map on the robot (Maps / MapSpotAreaInfo).
+ *                 Ecovacs numbers areas per map (each map starts at 0), so
+ *                 the Matter area ID is mapSlot * AREA_ID_MAP_STRIDE + the
+ *                 Ecovacs area ID, keeping IDs unique across floors
  *
  * Handler mapping (Matter → Ecovacs commands):
  *   rvcRunMode.changeToMode (1=Cleaning) → run('Clean' | 'Clean_V2')
@@ -24,6 +27,13 @@ import type { API, Logger, MatterRequests } from 'homebridge'
 
 import platformLang from '../utils/lang-en.js'
 import { BaseMatterAccessory } from './BaseMatterAccessory.js'
+
+// Ecovacs spot area IDs are per map. Each map gets a block of this many Matter
+// area IDs (map 1: 0-999, map 2: 1000-1999, ...)
+const AREA_ID_MAP_STRIDE = 1000
+
+// How long selectAreas waits for the robot to say which map it is on
+const REFRESH_MAP_TIMEOUT_MS = 4000
 
 // Matter mode tags: Auto, Quiet and Max are common tags, DeepClean and Vacuum
 // are the robot vacuum clean mode tags
@@ -165,8 +175,16 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
 
   /** Accumulated map data: mapId → mapName */
   private readonly mapsById = new Map<number, string>()
-  /** Accumulated area data: areaId → { mapId, name } */
-  private readonly areasById = new Map<number, { mapId: number, name: string }>()
+  /** Raw Ecovacs areas, keyed by `${mapId}:${ecovacsAreaId}` (area IDs are only unique per map) */
+  private readonly ecovacsAreas = new Map<string, { mapId: number, ecovacsAreaId: number, name: string }>()
+  /** Areas as exposed to Matter: matterAreaId → Ecovacs map/area. Rebuilt on every flush */
+  private areasById = new Map<number, { mapId: number, ecovacsAreaId: number, name: string }>()
+  /** The map the robot is currently localised on, if known */
+  private currentMapId?: number
+  /** The last map/area list sent, so re-reading unchanged maps sends nothing */
+  private sentServiceAreas = ''
+  /** Matter area IDs chosen with selectAreas, cleaned on the next start (empty = everywhere) */
+  private selectedAreaIds: number[] = []
   /** One-time note flag for the optional canvas module being unbuilt */
   private canvasNoteShown = false
 
@@ -371,8 +389,20 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
           return
         }
         this.mapsById.set(mapId, m.mapName || `Map ${m.mapID}`)
+        if (m.mapIsCurrentMap === true) {
+          this.currentMapId = mapId
+        }
+        this.logDebug(`Map '${m.mapName}' (${mapId}): current=${m.mapIsCurrentMap}, built=${m.mapIsBuilt}, status=${m.mapStatus}`)
         control.run('GetSpotAreas', m.mapID)
       })
+    })
+
+    control.on('CurrentMapMID', (mapId: any) => {
+      const id = Number(mapId)
+      this.logDebug(`Robot reports current map ${mapId}`)
+      if (!Number.isNaN(id) && id > 0) {
+        this.currentMapId = id
+      }
     })
 
     control.on('MapSpotAreas', (data: any) => {
@@ -395,8 +425,8 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
         this.logWarn(`Ignoring area with invalid IDs: area=${area.mapSpotAreaID}, map=${area.mapID}`)
         return
       }
-      const name = area.mapSpotAreaName || `Area ${area.mapSpotAreaID}`
-      this.areasById.set(areaId, { mapId, name })
+      const name = (area.mapSpotAreaName || `Area ${area.mapSpotAreaID}`).trim()
+      this.ecovacsAreas.set(`${mapId}:${areaId}`, { mapId, ecovacsAreaId: areaId, name })
       void this.flushServiceAreas()
     })
 
@@ -559,8 +589,8 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
       case 0: // Idle → go home
         this.control.run('Charge')
         break
-      case 1: // Cleaning → start auto clean
-        this.control.run(this.isV2 ? 'Clean_V2' : 'Clean')
+      case 1: // Cleaning → clean the selected areas, or everywhere if none
+        await this.startCleaning()
         break
       case 2: // Mapping (not all devices support this – send auto clean as fallback)
         this.control.run(this.isV2 ? 'Clean_V2' : 'Clean')
@@ -612,49 +642,99 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
     await this.updateOperationalState(64) // SeekingCharger
   }
 
+  /**
+   * Matter: SelectAreas only sets which areas the next run covers - the run is
+   * started separately with rvcRunMode.changeToMode(Cleaning), which is what
+   * Apple Home sends when you press start. Controllers only send SelectAreas
+   * when the selection changes, so the selection is kept until replaced.
+   */
   private async handleSelectAreas(request: MatterRequests.SelectAreas): Promise<void> {
     this.logInfo(`serviceArea.selectAreas → ${JSON.stringify(request.newAreas)}`)
-    if (!this.isDeviceReady()) {
-      return
-    }
-
-    // Empty array means clean everywhere (no area constraint)
-    if (!request.newAreas || request.newAreas.length === 0) {
-      this.logDebug('No areas selected — starting full auto clean.')
-      this.control.run(this.isV2 ? 'Clean_V2' : 'Clean')
-      await this.updateState('serviceArea', { selectedAreas: [] })
-      await this.updateRunMode(1) // Cleaning
-      await this.updateOperationalState(1) // Running
-      return
-    }
-
-    // Validate that all requested areas are known
-    const validAreas: number[] = []
-    for (const areaId of request.newAreas) {
+    const known: number[] = []
+    for (const areaId of request.newAreas ?? []) {
       if (this.areasById.has(areaId)) {
-        validAreas.push(areaId)
+        known.push(areaId)
       } else {
         this.logWarn(`selectAreas: unknown area ID ${areaId}, skipping`)
       }
     }
+    this.selectedAreaIds = known
+    await this.updateState('serviceArea', { selectedAreas: known })
+  }
 
-    if (validAreas.length === 0) {
-      this.logWarn('selectAreas: no valid areas to clean')
+  /** Start a run: the selected areas as a spot area clean, or a full clean if none are selected. */
+  private async startCleaning(): Promise<void> {
+    if (this.selectedAreaIds.length === 0) {
+      this.logDebug('No areas selected — starting full auto clean.')
+      this.control.run(this.isV2 ? 'Clean_V2' : 'Clean')
       return
     }
 
-    // Send SpotArea command with comma-separated area IDs
-    const areaCommand = validAreas.join(',')
-    this.logDebug(`Sending SpotArea command: ${areaCommand}`)
+    // The robot may have been carried to another floor since the map was last
+    // read, so ask which map it is on now. Otherwise an area ID from the other
+    // floor is sent and a different room with the same ID gets cleaned
+    await this.refreshCurrentMap()
+    this.logInfo(`Robot is on map ${this.currentMapId === undefined
+      ? 'unknown (no map check possible)'
+      : `'${this.mapsById.get(this.currentMapId) ?? '?'}' (${this.currentMapId})`}`)
+
+    // Ecovacs only cleans spot areas of the map the robot is on
+    const validAreas: number[] = []
+    const ecovacsAreaIds: number[] = []
+    for (const areaId of this.selectedAreaIds) {
+      const area = this.areasById.get(areaId)
+      if (!area) {
+        this.logWarn(`Selected area ID ${areaId} no longer exists, skipping`)
+        continue
+      }
+      if (this.currentMapId !== undefined && area.mapId !== this.currentMapId) {
+        this.logWarn(`Area '${area.name}' is on map '${this.mapsById.get(area.mapId)}', but the robot is on map '${this.mapsById.get(this.currentMapId) ?? this.currentMapId}', skipping`)
+        continue
+      }
+      validAreas.push(areaId)
+      ecovacsAreaIds.push(area.ecovacsAreaId)
+    }
+
+    if (validAreas.length === 0) {
+      this.logWarn('None of the selected areas can be cleaned from where the robot is, not starting.')
+      // The controller already assumed the run started, so put it back
+      await this.updateRunMode(0) // Idle
+      return
+    }
+
+    const areaCommand = ecovacsAreaIds.join(',')
+    this.logInfo(`Cleaning ${validAreas.map(id => `'${this.areasById.get(id)?.name}'`).join(', ')} (Ecovacs area IDs ${areaCommand})`)
     if (this.isV2) {
       this.control.run('SpotArea_V2', areaCommand)
     } else {
       this.control.run('SpotArea', 'start', areaCommand)
     }
+  }
 
-    await this.updateState('serviceArea', { selectedAreas: validAreas })
-    await this.updateRunMode(1) // Cleaning
-    await this.updateOperationalState(1) // Running
+  /**
+   * Ask the robot for its maps and wait (briefly) for the reply naming the
+   * current one. Falls back to the last known map if no reply arrives in time.
+   */
+  private async refreshCurrentMap(timeoutMs = REFRESH_MAP_TIMEOUT_MS): Promise<void> {
+    if (typeof this.control?.once !== 'function') {
+      return
+    }
+    await new Promise<void>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const done = () => {
+        clearTimeout(timer)
+        this.control.removeListener?.('CurrentMapMID', done)
+        resolve()
+      }
+      timer = setTimeout(() => {
+        this.logInfo('No reply with the current map within 4s, using the last known map.')
+        done()
+      }, timeoutMs)
+      // The 'CurrentMapMID' listener in connectControl updates currentMapId
+      // first, as it was registered earlier
+      this.control.once('CurrentMapMID', done)
+      this.control.run('GetMaps')
+    })
   }
 
   private async handleSkipArea(request: MatterRequests.SkipArea): Promise<void> {
@@ -668,10 +748,9 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
       return
     }
 
-    // Read the current selected areas and remove the skipped one
-    const currentState = await this.readState('serviceArea')
-    const currentAreas: number[] = (currentState as any)?.selectedAreas ?? []
-    const remaining = currentAreas.filter(id => id !== request.skippedArea)
+    // Remove the skipped area from the selection
+    const remaining = this.selectedAreaIds.filter(id => id !== request.skippedArea)
+    this.selectedAreaIds = remaining
 
     this.logDebug(`Skipping area ${request.skippedArea}, remaining: [${remaining.join(', ')}]`)
     await this.updateState('serviceArea', { selectedAreas: remaining })
@@ -695,15 +774,34 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
   /** Push the current map/area data into the Matter serviceArea cluster. */
   private async flushServiceAreas(): Promise<void> {
     const supportedMaps = Array.from(this.mapsById.entries(), ([mapId, name]) => ({ mapId, name }))
+
+    // Ecovacs area IDs restart at 0 on every map, so give each map its own ID
+    // range. Maps are ordered by ID so the result is stable across restarts,
+    // and a single-map robot keeps its plain Ecovacs area IDs
+    const areas = Array.from(this.ecovacsAreas.values())
+    const mapIds = new Set([
+      ...this.mapsById.keys(),
+      ...areas.map(a => a.mapId),
+    ])
+    const mapSlots = new Map(Array.from(mapIds).sort((a, b) => a - b).map((mapId, slot) => [mapId, slot]))
+    this.areasById = new Map(areas.map(area => [mapSlots.get(area.mapId)! * AREA_ID_MAP_STRIDE + area.ecovacsAreaId, area]))
+
     const supportedAreas = Array.from(this.areasById.entries(), ([areaId, { mapId, name }]) => ({
       areaId,
-      mapId: this.mapsById.size > 0
+      mapId: this.mapsById.has(mapId)
         ? mapId
         : null,
       areaInfo: {
         locationInfo: { locationName: name },
       },
     }))
+    // Every map refresh re-reads every area, one event each - only send when
+    // the list actually changed, not once per area
+    const serialised = JSON.stringify({ supportedMaps, supportedAreas })
+    if (serialised === this.sentServiceAreas) {
+      return
+    }
+    this.sentServiceAreas = serialised
     await this.updateState('serviceArea', { supportedMaps, supportedAreas })
   }
 
