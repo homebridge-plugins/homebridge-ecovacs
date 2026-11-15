@@ -253,3 +253,51 @@ describe('ecovacsRoboticVacuumAccessory suction levels (#322)', () => {
     expect(sent(updateAccessoryState, 'rvcCleanMode', 'currentMode')).toEqual([3])
   })
 })
+
+// Two floors: map 1 (the robot is on it) and map 2, one room each
+function twoFloors(control: EventEmitter & { is_ready?: boolean }) {
+  control.is_ready = true
+  control.emit('Maps', {
+    maps: [
+      { mapID: '1', mapName: 'Ground', mapIsCurrentMap: true },
+      { mapID: '2', mapName: 'Upstairs', mapIsCurrentMap: false },
+    ],
+  })
+  control.emit('MapSpotAreaInfo', { mapID: '1', mapSpotAreaID: '3', mapSpotAreaName: 'Kitchen' })
+  control.emit('MapSpotAreaInfo', { mapID: '2', mapSpotAreaID: '3', mapSpotAreaName: 'Bedroom' })
+}
+
+// Start a run the way Home does, answering the robot's map check at once
+async function startRun(vacuum: any, control: EventEmitter, currentMap = '1') {
+  const run = vacuum.handlers.rvcRunMode.changeToMode({ newMode: 1 })
+  await settle()
+  control.emit('CurrentMapMID', currentMap)
+  return run
+}
+
+describe('ecovacsRoboticVacuumAccessory room cleaning (#328)', () => {
+  it('refuses a start when every picked room is on another floor', async () => {
+    const { vacuum, control } = makeVacuum()
+    twoFloors(control)
+    await settle()
+    await vacuum.handlers.serviceArea.selectAreas({
+      newAreas: [1003],
+    })
+
+    await expect(startRun(vacuum, control)).rejects.toThrow('None of the selected areas')
+    expect(control.run).not.toHaveBeenCalledWith('SpotArea_V2', expect.anything())
+    expect(control.run).not.toHaveBeenCalledWith('Clean_V2')
+  })
+
+  it('cleans a picked room on the floor the robot is on', async () => {
+    const { vacuum, control } = makeVacuum()
+    twoFloors(control)
+    await settle()
+    await vacuum.handlers.serviceArea.selectAreas({
+      newAreas: [3],
+    })
+
+    await startRun(vacuum, control)
+    expect(control.run).toHaveBeenCalledWith('SpotArea_V2', '3')
+  })
+})

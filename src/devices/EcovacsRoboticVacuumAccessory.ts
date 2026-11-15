@@ -696,10 +696,10 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
     }
 
     if (validAreas.length === 0) {
-      this.logWarn('None of the selected areas can be cleaned from where the robot is, not starting.')
-      // The controller already assumed the run started, so put it back
-      await this.updateRunMode(0) // Idle
-      return
+      // Homebridge sets the new run mode once this handler returns, so setting
+      // Idle here was overwritten and Home showed Cleaning with the robot still
+      // docked. Refusing the command leaves the run mode as it was
+      throw this.cannotRun('None of the selected areas can be cleaned from where the robot is, not starting.')
     }
 
     const areaCommand = ecovacsAreaIds.join(',')
@@ -709,6 +709,19 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
     } else {
       this.control.run('SpotArea', 'start', areaCommand)
     }
+  }
+
+  /**
+   * The error that refuses a Matter command the robot cannot carry out. Matter's
+   * own 'invalid in this state' status needs Homebridge 2.3 or later, and any
+   * other error from a handler is still sent back as a failure.
+   */
+  private cannotRun(message: string): Error {
+    this.logWarn(message)
+    const status = this.api.matter?.status
+    return status?.InvalidInState
+      ? new status.InvalidInState(message)
+      : new Error(message)
   }
 
   /**

@@ -9,6 +9,7 @@ All notable changes to `@homebridge-plugins/homebridge-ecovacs` will be document
 - fix(ui): make the Reset Pairing button work in the settings iframe (#329) (@tplnet)
 - fix(ui): match the reset pairing confirm to the other click-twice buttons
 - fix(matter): multi-floor room cleaning, clean selected areas on start (#328) (@tplnet)
+- fix(matter): refuse a start that cannot clean, so home does not show cleaning
 
 ## v8.3.0 (2026-11-14)
 
