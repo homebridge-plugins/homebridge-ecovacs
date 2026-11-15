@@ -757,12 +757,24 @@
 
   // The plugin settings page runs in a sandboxed iframe where window.confirm()
   // is blocked and returns false without showing anything, so the button did
-  // nothing. Ask for confirmation in the page instead: the first click arms
-  // the button and shows what will happen, a second click within 10s resets.
+  // nothing. Ask for confirmation in the page instead, the same way as the
+  // Remove All button: the first click arms the button and shows what will
+  // happen, and a second click within 5 seconds resets
+  const resetPairingTimers = {};
+  const restoreResetButton = (uuid, commissioned, btn) => {
+    clearTimeout(resetPairingTimers[uuid]);
+    delete resetPairingTimers[uuid];
+    delete btn.dataset.confirm;
+    btn.disabled = false;
+    btn.textContent = "Reset Pairing";
+    btn.classList.toggle("btn-danger", commissioned);
+    btn.classList.toggle("btn-outline-secondary", !commissioned);
+    document.querySelector(`[data-reset-note="${uuid}"]`)?.remove();
+  };
+
   resetMatterDevice = async (uuid, displayName, commissioned, btn) => {
-    if (btn.dataset.armed !== "true") {
-      btn.dataset.armed = "true";
-      btn.dataset.label = btn.textContent;
+    if (btn.dataset.confirm !== "yes") {
+      btn.dataset.confirm = "yes";
       btn.textContent = "Click again to confirm reset";
       btn.classList.add("btn-danger");
       btn.classList.remove("btn-outline-secondary");
@@ -773,19 +785,12 @@
         ? `Make sure "${displayName}" has been removed from your Home app (or Matter controller) first, otherwise you will see repeated "Fabric not found" errors. Restart Homebridge afterwards and re-pair with the new QR code.`
         : `This clears the commissioning data for "${displayName}". Restart Homebridge afterwards to get a new QR code.`;
       btn.insertAdjacentElement("afterend", note);
-      btn.dataset.timer = String(setTimeout(() => {
-        btn.dataset.armed = "false";
-        btn.textContent = btn.dataset.label;
-        if (!commissioned) {
-          btn.classList.remove("btn-danger");
-          btn.classList.add("btn-outline-secondary");
-        }
-        note.remove();
-      }, 10000));
+      resetPairingTimers[uuid] = setTimeout(() => restoreResetButton(uuid, commissioned, btn), 5000);
       return;
     }
-    clearTimeout(Number(btn.dataset.timer));
-    btn.dataset.armed = "false";
+    clearTimeout(resetPairingTimers[uuid]);
+    delete resetPairingTimers[uuid];
+    delete btn.dataset.confirm;
     document.querySelector(`[data-reset-note="${uuid}"]`)?.remove();
     btn.disabled = true;
     btn.textContent = "Resetting…";
@@ -802,13 +807,11 @@
           result?.error || "Unknown error",
           "Reset Failed",
         );
-        btn.disabled = false;
-        btn.textContent = "Reset Pairing";
+        restoreResetButton(uuid, commissioned, btn);
       }
     } catch (err) {
       homebridge.toast.error(err.message, "Reset Failed");
-      btn.disabled = false;
-      btn.textContent = "Reset Pairing";
+      restoreResetButton(uuid, commissioned, btn);
     }
   };
 </script>
