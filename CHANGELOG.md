@@ -14,6 +14,7 @@ All notable changes to `@homebridge-plugins/homebridge-ecovacs` will be document
 - fix(matter): keep each floor's room ids when a map is added or removed
 - fix(matter): leave out a room whose map is unknown, so the room list is not refused
 - fix(matter): send the room list again after a failed update
+- fix(matter): do not show a robot as faulty when a status query times out (#330) (@tplnet)
 
 ## v8.3.0 (2026-11-14)
 

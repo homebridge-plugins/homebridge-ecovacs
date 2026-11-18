@@ -370,6 +370,13 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
         }
         return
       }
+      // A status query that went unanswered (a short cloud or Wi-Fi drop-out)
+      // says nothing about the robot - the next poll asks again - so do not
+      // show the robot as faulty in Home for it
+      if (/Request Timeout \(command 'get/i.test(String(err))) {
+        this.logDebug(`No reply in time: ${err}`)
+        return
+      }
       if (this.lastReportedError !== String(err)) {
         this.lastReportedError = String(err)
         this.logWarn(`Device error: ${err}`)

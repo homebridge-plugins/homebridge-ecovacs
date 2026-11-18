@@ -503,3 +503,24 @@ describe('ecovacsRoboticVacuumAccessory room list checks (#328)', () => {
     ])
   })
 })
+
+describe('ecovacsRoboticVacuumAccessory unanswered status queries', () => {
+  it('does not show a cleaning robot as faulty when a status query times out', async () => {
+    const { vacuum, control, state } = makeVacuum()
+    await vacuum.markRegistered()
+    control.emit('CleanReport', 'auto')
+    await settle()
+    expect(state.rvcOperationalState?.operationalState).toBe(1) // Running
+    control.emit('Error', 'Request Timeout (command \'getBattery\')')
+    await settle()
+    expect(state.rvcOperationalState?.operationalState).toBe(1) // still Running
+  })
+
+  it('still shows a real error', async () => {
+    const { vacuum, control, state } = makeVacuum()
+    await vacuum.markRegistered()
+    control.emit('Error', 'RollAbnormal: Main Brush is tangled')
+    await settle()
+    expect(state.rvcOperationalState?.operationalState).toBe(3) // Error
+  })
+})
