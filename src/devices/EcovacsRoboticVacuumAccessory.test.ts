@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { EcovacsRoboticVacuumAccessory } from './EcovacsRoboticVacuumAccessory.js'
 
 // Enough of the Homebridge API for the vacuum to build itself and push state
-function makeVacuum(isV2 = true, saved: Record<string, Record<string, unknown>> = {}) {
+function makeVacuum(isV2 = true, saved: Record<string, Record<string, unknown>> = {}, extra: Record<string, unknown> = {}) {
   // Matter keeps cluster state, and saves it over a restart
   const state: Record<string, Record<string, unknown>> = structuredClone(saved)
   const updateAccessoryState = vi.fn(async (_uuid: string, cluster: string, attributes: Record<string, unknown>) => {
@@ -43,6 +43,7 @@ function makeVacuum(isV2 = true, saved: Record<string, Record<string, unknown>> 
     company: 'Ecovacs',
     deviceModel: 'X1 Plus',
     isV2,
+    ...extra,
   } as any)
   const control = Object.assign(new EventEmitter(), {
     run: vi.fn(),
@@ -522,5 +523,173 @@ describe('ecovacsRoboticVacuumAccessory unanswered status queries', () => {
     control.emit('Error', 'RollAbnormal: Main Brush is tangled')
     await settle()
     expect(state.rvcOperationalState?.operationalState).toBe(3) // Error
+  })
+})
+
+describe('ecovacsRoboticVacuumAccessory robots that report through getWorkState', () => {
+  class Generic {
+    constructor(public name: string, public args: any) {}
+  }
+
+  // An unlisted robot that has answered the getWorkState probe
+  async function makeWorkStateVacuum() {
+    const made = makeVacuum(true, {}, { probeWorkState: true })
+    Object.assign(made.control, {
+      sendCommand: vi.fn(),
+      vacBotCommand: { Generic },
+      is_ready: true,
+    })
+    await made.vacuum.markRegistered()
+    made.control.emit('ready', true)
+    made.control.emit('Maps', {
+      maps: [
+        { mapID: '209769737', mapName: 'EG', mapIsCurrentMap: true },
+      ],
+    })
+    made.vacuum.applyWorkState({
+      paused: 0,
+      robotState: { state: 'idle' },
+      stationState: { state: 'idle' },
+    })
+    await settle()
+    return made
+  }
+  const sent = (control: any) => control.sendCommand.mock.calls.map(([cmd]: [Generic]) => cmd)
+
+  it('waits for the probe, then reads the rooms with getMapSet_V2 instead of getMapSubSet', async () => {
+    const { vacuum, control, state } = await makeWorkStateVacuum()
+    expect(vacuum.usesWorkState).toBe(true)
+    expect(sent(control).map((cmd: Generic) => cmd.name)).toEqual(['getWorkState', 'getMapSet_V2'])
+    expect(control.run).not.toHaveBeenCalledWith('GetSpotAreas', expect.anything())
+    vacuum.applyMapSetV2({
+      mid: '209769737',
+      type: 'ar',
+      subsets: [
+        ['0', 'Bad'],
+        ['4', 'Küche'],
+      ],
+    })
+    // An old-style spot area event from the library must not drop them
+    control.emit('MapSpotAreas', {
+      mapID: '209769737',
+      mapSpotAreas: [
+        { mapSpotAreaID: undefined },
+      ],
+    })
+    await settle()
+    expect(state.serviceArea?.supportedAreas).toHaveLength(2)
+  })
+
+  it('carries on the usual way when the robot refuses getWorkState', async () => {
+    const { vacuum, control } = makeVacuum(true, {}, { probeWorkState: true })
+    Object.assign(control, {
+      sendCommand: vi.fn(),
+      vacBotCommand: { Generic },
+      is_ready: true,
+    })
+    control.emit('ready', true)
+    control.emit('Maps', {
+      maps: [
+        { mapID: '1', mapName: 'EG', mapIsCurrentMap: true },
+      ],
+    })
+    expect(control.run).not.toHaveBeenCalledWith('GetSpotAreas', '1')
+    vacuum.workStateUnsupported()
+    expect(vacuum.usesWorkState).toBe(false)
+    expect(control.run).toHaveBeenCalledWith('GetSpotAreas', '1')
+    expect(control.run).toHaveBeenCalledWith('GetCleanState_V2')
+  })
+
+  it('shows the state the robot reports', async () => {
+    const { vacuum, state } = await makeWorkStateVacuum()
+    vacuum.applyWorkState({
+      paused: 0,
+      robotState: {
+        cleanState: { type: 'auto' },
+        state: 'cleaning',
+      },
+      stationState: { state: 'idle' },
+    })
+    await settle()
+    expect(state.rvcOperationalState?.operationalState).toBe(1) // Running
+    vacuum.applyWorkState({
+      paused: 1,
+      robotState: {
+        cleanState: { type: 'auto' },
+        state: 'cleaning',
+      },
+      stationState: { state: 'idle' },
+    })
+    await settle()
+    expect(state.rvcOperationalState?.operationalState).toBe(2) // Paused
+    vacuum.applyWorkState({
+      paused: 0,
+      robotState: { state: 'idle' },
+      stationState: { state: 'goCharging' },
+    })
+    await settle()
+    expect(state.rvcOperationalState?.operationalState).toBe(64) // SeekingCharger
+  })
+
+  it('pauses and resumes with clean_V2', async () => {
+    const { vacuum, control } = await makeWorkStateVacuum()
+    await (vacuum as any).handlePause()
+    await (vacuum as any).handleResume()
+    expect(sent(control).slice(-2).map((cmd: Generic) => `${cmd.name}:${cmd.args.act}`)).toEqual(['clean_V2:pause', 'clean_V2:resume'])
+    expect(control.run).not.toHaveBeenCalledWith('Pause')
+  })
+
+  it('ends the run before sending the robot home, so the next start is not blocked', async () => {
+    const { vacuum, control } = await makeWorkStateVacuum()
+    vi.useFakeTimers()
+    try {
+      const done = (vacuum as any).handleGoHome()
+      await vi.advanceTimersByTimeAsync(2000)
+      await done
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(sent(control).at(-1)).toMatchObject({
+      name: 'clean_V2',
+      args: { act: 'stop' },
+    })
+    expect(control.run).toHaveBeenCalledWith('Charge')
+  })
+
+  it('cleans a room with the freeClean type', async () => {
+    const { vacuum, control, state } = await makeWorkStateVacuum()
+    vacuum.applyMapSetV2({
+      mid: '209769737',
+      type: 'ar',
+      subsets: [
+        ['4', 'Küche'],
+      ],
+    })
+    await settle()
+    await select(vacuum, state, [4])
+    await startRun(vacuum, control, '209769737')
+    expect(sent(control).at(-1)).toMatchObject({
+      name: 'clean_V2',
+      args: {
+        act: 'start',
+        content: { type: 'freeClean', value: '1,4;', count: 1 },
+      },
+    })
+    expect(control.run).not.toHaveBeenCalledWith('SpotArea_V2', expect.anything())
+  })
+
+  it('does not show the robot as faulty for an unanswered status query or a codeless error', async () => {
+    const { vacuum, control, state } = await makeWorkStateVacuum()
+    vacuum.applyWorkState({
+      paused: 0,
+      robotState: { state: 'cleaning' },
+      stationState: { state: 'idle' },
+    })
+    await settle()
+    control.emit('Error', 'Request Timeout (command \'getBattery\')')
+    control.emit('Error', 'unknown errorCode: ')
+    control.emit('Error', 'Unhandled error. (undefined)')
+    await settle()
+    expect(state.rvcOperationalState?.operationalState).toBe(1) // still Running
   })
 })

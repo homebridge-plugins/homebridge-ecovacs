@@ -25,7 +25,10 @@
 
 import type { API, Logger, MatterRequests } from 'homebridge'
 
+import process from 'node:process'
+
 import platformLang from '../utils/lang-en.js'
+import { canReadRoomList, decodeMapSetV2Rooms, freeCleanValue, workStateCleanReport } from '../utils/work-state-robots.js'
 import { BaseMatterAccessory } from './BaseMatterAccessory.js'
 
 // Ecovacs spot area IDs are per map. Each map gets a block of this many Matter
@@ -140,6 +143,14 @@ export interface EcovacsDeviceInfo {
   fwVersion?: string
   /** Whether the device uses V2 commands (950-type). */
   isV2?: boolean
+  /**
+   * The library does not list this model: ask it for getWorkState once it is
+   * ready, and if it answers, talk to it the newer way (see
+   * utils/work-state-robots.ts)
+   */
+  probeWorkState?: boolean
+  /** Called once the robot has answered getWorkState */
+  onWorkStateEnabled?: () => void
 }
 
 /**
@@ -152,6 +163,17 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
   private control: any = null
 
   private readonly isV2?: boolean
+
+  /**
+   * Whether the robot reports its state through getWorkState (newer robots
+   * the library does not list): 'pending' until it has answered the probe
+   */
+  private workStateMode: 'off' | 'pending' | 'on' = 'off'
+
+  private readonly onWorkStateEnabled?: () => void
+
+  /** A map list that arrived while the probe was pending */
+  private mapsAwaitingProbe: any = null
 
   /** Tracked so we can guard handler state checks. */
   private currentOperationalState = 66 // start docked
@@ -322,6 +344,10 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
     })
 
     this.isV2 = isV2
+    if (device.probeWorkState) {
+      this.workStateMode = 'pending'
+    }
+    this.onWorkStateEnabled = device.onWorkStateEnabled
     this.logInfo('Matter accessory initialized (waiting for device connection).')
   }
 
@@ -344,7 +370,11 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
       this.logDebug('Device ready — requesting initial state.')
       control.run('GetBatteryState')
       control.run('GetChargeState')
-      control.run(this.isV2 ? 'GetCleanState_V2' : 'GetCleanState')
+      if (this.workStateMode === 'off') {
+        control.run(this.isV2 ? 'GetCleanState_V2' : 'GetCleanState')
+      } else {
+        this.probeWorkState()
+      }
       control.run('GetCleanSpeed')
       control.run('GetMaps')
     })
@@ -377,6 +407,12 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
         this.logDebug(`No reply in time: ${err}`)
         return
       }
+      // Robots that use getWorkState send error events without an error code
+      // as they start and stop a run
+      if (this.workStateMode === 'on' && /^(?:unknown errorCode:\s*|Unhandled error\. \(undefined\))$/.test(String(err))) {
+        this.logDebug(`Ignoring an error without a code: ${err}`)
+        return
+      }
       if (this.lastReportedError !== String(err)) {
         this.lastReportedError = String(err)
         this.logWarn(`Device error: ${err}`)
@@ -392,36 +428,12 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
       if (!data?.maps) {
         return
       }
-      // The reply lists every map, so forget any map that has been deleted
-      const listed = new Set(Object.values(data.maps).map((m: any) => Number(m.mapID)))
-      for (const mapId of this.mapsById.keys()) {
-        if (!listed.has(mapId)) {
-          this.mapsById.delete(mapId)
-        }
+      // Which way to ask for the rooms is only known once the probe is answered
+      if (this.workStateMode === 'pending') {
+        this.mapsAwaitingProbe = data
+        return
       }
-      for (const [key, area] of this.ecovacsAreas) {
-        if (!listed.has(area.mapId)) {
-          this.ecovacsAreas.delete(key)
-        }
-      }
-
-      // Register each map and request its spot areas
-      Object.values(data.maps).forEach((m: any) => {
-        const mapId = Number(m.mapID)
-        if (Number.isNaN(mapId)) {
-          this.logWarn(`Ignoring map with invalid ID: ${m.mapID}`)
-          return
-        }
-        this.mapsById.set(mapId, m.mapName || `Map ${m.mapID}`)
-        if (m.mapIsCurrentMap === true) {
-          this.currentMapId = mapId
-        }
-        this.logDebug(`Map '${m.mapName}' (${mapId}): current=${m.mapIsCurrentMap}, built=${m.mapIsBuilt}, status=${m.mapStatus}`)
-        control.run('GetSpotAreas', m.mapID)
-      })
-      // Send the maps now, so a deleted map goes and a new one with no rooms yet
-      // still appears
-      void this.flushServiceAreas()
+      this.onMaps(data)
     })
 
     control.on('CurrentMapMID', (mapId: any) => {
@@ -433,7 +445,8 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
     })
 
     control.on('MapSpotAreas', (data: any) => {
-      if (!data?.mapSpotAreas) {
+      // Rooms come from getMapSet_V2 on robots that use getWorkState
+      if (this.workStateMode === 'on' || !data?.mapSpotAreas) {
         return
       }
       // The reply lists every area on the map, so forget any that were deleted
@@ -475,6 +488,147 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
     control.run('GetMaps')
 
     this.logInfo('Connected to device control — Matter state updates active.')
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Robots that report through getWorkState (see utils/work-state-robots.ts)
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /** Whether the robot reports its state through getWorkState */
+  public get usesWorkState(): boolean {
+    return this.workStateMode === 'on'
+  }
+
+  /** Send a command the library has no wrapper for, by its name */
+  private sendNamedCommand(name: string, payload: Record<string, unknown> = {}): void {
+    const Generic = this.control?.vacBotCommand?.Generic
+    if (!Generic) {
+      this.logWarn(`Cannot send '${name}' with this library version`)
+      return
+    }
+    this.control.sendCommand(new Generic(name, payload))
+  }
+
+  /** Ask for the robot's state; answers come to {@link applyWorkState} */
+  public requestWorkState(): void {
+    this.sendNamedCommand('getWorkState')
+  }
+
+  /**
+   * Ask an unlisted robot for getWorkState. A robot that answers is talked to
+   * the newer way; one that refuses it (or does not answer) the usual way
+   */
+  private probeWorkState(): void {
+    this.requestWorkState()
+    setTimeout(() => {
+      if (this.workStateMode === 'pending') {
+        this.workStateUnsupported()
+      }
+    }, 15000)
+  }
+
+  /** The robot refused getWorkState: carry on the usual way */
+  public workStateUnsupported(): void {
+    if (this.workStateMode !== 'pending') {
+      return
+    }
+    this.workStateMode = 'off'
+    this.control?.run(this.isV2 ? 'GetCleanState_V2' : 'GetCleanState')
+    this.onMapsAwaitingProbe()
+  }
+
+  private onMapsAwaitingProbe(): void {
+    const maps = this.mapsAwaitingProbe
+    this.mapsAwaitingProbe = null
+    if (maps) {
+      this.onMaps(maps)
+    }
+  }
+
+  /** A getWorkState reply */
+  public applyWorkState(data: any): void {
+    if (this.workStateMode === 'pending') {
+      this.workStateMode = 'on'
+      this.logInfo('The robot reports its state through getWorkState, using the newer commands for it.')
+      if (!canReadRoomList()) {
+        this.logWarn(`The room names of this robot need Node.js 22.15 or newer to read (this is ${process.version}), so no rooms are listed.`)
+      }
+      this.onWorkStateEnabled?.()
+      this.onMapsAwaitingProbe()
+    }
+    const report = workStateCleanReport(data)
+    this.logDebug(`Work state ${JSON.stringify(data)} → ${report}`)
+    void this.onCleanReport(report)
+  }
+
+  /** Ask for a map's rooms with getMapSet_V2; the reply goes to {@link applyMapSetV2} */
+  private requestMapSetV2(mapId: string | number): void {
+    this.sendNamedCommand('getMapSet_V2', {
+      mid: String(mapId),
+      type: 'ar',
+    })
+  }
+
+  /** The rooms from a getMapSet_V2 reply */
+  public applyMapSetV2(data: any): void {
+    try {
+      const decoded = decodeMapSetV2Rooms(data)
+      if (!decoded) {
+        return
+      }
+      const { mapId, rooms } = decoded
+      const listed = new Set(rooms.map(room => room.id))
+      for (const room of rooms) {
+        this.ecovacsAreas.set(`${mapId}:${room.id}`, { mapId, ecovacsAreaId: room.id, name: room.name })
+      }
+      for (const [key, area] of this.ecovacsAreas) {
+        if (area.mapId === mapId && !listed.has(area.ecovacsAreaId)) {
+          this.ecovacsAreas.delete(key)
+        }
+      }
+      this.logDebug(`Rooms on map ${mapId}: ${rooms.map(room => `${room.id}=${room.name}`).join(', ')}`)
+      void this.flushServiceAreas()
+    } catch (err) {
+      this.logWarn(`Could not read the room list: ${(err as Error)?.message ?? err}`)
+    }
+  }
+
+  /** A map list from the robot: keep the maps, and ask for each map's rooms */
+  private onMaps(data: any): void {
+    // The reply lists every map, so forget any map that has been deleted
+    const listed = new Set(Object.values(data.maps).map((m: any) => Number(m.mapID)))
+    for (const mapId of this.mapsById.keys()) {
+      if (!listed.has(mapId)) {
+        this.mapsById.delete(mapId)
+      }
+    }
+    for (const [key, area] of this.ecovacsAreas) {
+      if (!listed.has(area.mapId)) {
+        this.ecovacsAreas.delete(key)
+      }
+    }
+
+    // Register each map and request its spot areas
+    Object.values(data.maps).forEach((m: any) => {
+      const mapId = Number(m.mapID)
+      if (Number.isNaN(mapId)) {
+        this.logWarn(`Ignoring map with invalid ID: ${m.mapID}`)
+        return
+      }
+      this.mapsById.set(mapId, m.mapName || `Map ${m.mapID}`)
+      if (m.mapIsCurrentMap === true) {
+        this.currentMapId = mapId
+      }
+      this.logDebug(`Map '${m.mapName}' (${mapId}): current=${m.mapIsCurrentMap}, built=${m.mapIsBuilt}, status=${m.mapStatus}`)
+      if (this.workStateMode === 'on') {
+        this.requestMapSetV2(m.mapID)
+      } else {
+        this.control.run('GetSpotAreas', m.mapID)
+      }
+    })
+    // Send the maps now, so a deleted map goes and a new one with no rooms yet
+    // still appears
+    void this.flushServiceAreas()
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -659,7 +813,11 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
     if (!this.isDeviceReady()) {
       return
     }
-    this.control.run('Pause')
+    if (this.workStateMode === 'on') {
+      this.sendNamedCommand('clean_V2', { act: 'pause' })
+    } else {
+      this.control.run('Pause')
+    }
     await this.updateOperationalState(2) // Paused
   }
 
@@ -668,7 +826,11 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
     if (!this.isDeviceReady()) {
       return
     }
-    this.control.run('Resume')
+    if (this.workStateMode === 'on') {
+      this.sendNamedCommand('clean_V2', { act: 'resume' })
+    } else {
+      this.control.run('Resume')
+    }
     await this.updateRunMode(1) // Cleaning
     await this.updateOperationalState(1) // Running
   }
@@ -677,6 +839,13 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
     this.logInfo('rvcOperationalState.goHome')
     if (!this.isDeviceReady()) {
       return
+    }
+    if (this.workStateMode === 'on') {
+      // Charge alone only parks the run on these robots - it stays paused on
+      // the dock and blocks the next start - so end it first, as the app's
+      // 'end and return' does
+      this.sendNamedCommand('clean_V2', { act: 'stop' })
+      await new Promise(resolve => setTimeout(resolve, 1500))
     }
     this.control.run('Charge')
     await this.updateRunMode(0) // Idle
@@ -738,7 +907,22 @@ export class EcovacsRoboticVacuumAccessory extends BaseMatterAccessory {
 
     const areaCommand = ecovacsAreaIds.join(',')
     this.logInfo(`Cleaning ${validAreas.map(id => `'${this.areasById.get(id)?.name}'`).join(', ')} (Ecovacs area IDs ${areaCommand})`)
-    if (this.isV2) {
+    if (this.workStateMode === 'on') {
+      // These robots refuse the spotArea type ('unknown type') and take rooms
+      // as freeClean. Whether they also mop follows their own (per room)
+      // settings in the Ecovacs app
+      this.sendNamedCommand('clean_V2', {
+        act: 'start',
+        content: {
+          count: 1,
+          donotClean: '',
+          type: 'freeClean',
+          value: freeCleanValue(areaCommand),
+        },
+        mode: '',
+        router: 'plan',
+      })
+    } else if (this.isV2) {
       this.control.run('SpotArea_V2', areaCommand)
     } else {
       this.control.run('SpotArea', 'start', areaCommand)

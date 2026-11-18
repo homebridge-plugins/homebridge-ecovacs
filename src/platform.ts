@@ -7,6 +7,7 @@ import type {
 } from 'homebridge'
 
 import type { EcovacsConfig } from './config.js'
+import type { ModelList } from './utils/work-state-robots.js'
 
 import { Buffer } from 'node:buffer'
 import { createHash } from 'node:crypto'
@@ -25,6 +26,7 @@ import platformChars from './utils/custom-chars.js'
 import { matterPollInterval, parseError, sleep } from './utils/functions.js'
 import platformLang from './utils/lang-en.js'
 import { quietEcovacsEventLogging } from './utils/quiet-library-logging.js'
+import { routeWorkStateReplies, treatAsUnlistedV2, workStatePollInterval } from './utils/work-state-robots.js'
 
 const require = createRequire(import.meta.url)
 const plugin = require('../package.json')
@@ -52,6 +54,9 @@ export class EcovacsPlatform implements DynamicPlatformPlugin {
   /** Matter vacuum accessory instances keyed by device DID. */
   private readonly matterVacuumMap: Map<string, EcovacsRoboticVacuumAccessory>
     = new Map()
+
+  /** The alpha library's model list: undefined until loaded, null if it did not load */
+  private alphaModels?: ModelList | null
 
   constructor(log: Logging, config: EcovacsConfig, api: API) {
     this.api = api
@@ -1049,6 +1054,7 @@ export class EcovacsPlatform implements DynamicPlatformPlugin {
         device,
         countries[this.config.countryCode].continent,
       )
+      this.applyUnknownModelDefaults(loadedDevice, device.nick || device.did)
 
       // Get the cached accessory or add to Homebridge if it doesn't exist
       const accessory
@@ -1554,6 +1560,9 @@ export class EcovacsPlatform implements DynamicPlatformPlugin {
         device,
         countries[this.config.countryCode].continent,
       )
+      const unlisted = this.applyUnknownModelDefaults(loadedDevice, dName)
+      // Set below, once the refresh is set up
+      let onWorkStateEnabled = () => {}
 
       // Create and store the Matter accessory
       const matterVacuum = new EcovacsRoboticVacuumAccessory(
@@ -1565,9 +1574,14 @@ export class EcovacsPlatform implements DynamicPlatformPlugin {
           company: device.company,
           model: device.deviceModel,
           isV2: loadedDevice.is950type_V2(),
+          probeWorkState: unlisted,
+          onWorkStateEnabled: () => onWorkStateEnabled(),
         },
       )
       this.matterVacuumMap.set(device.did, matterVacuum)
+      if (unlisted) {
+        this.routeWorkStateReplies(loadedDevice, matterVacuum, dName)
+      }
 
       // Connect to the device and attach Matter event listeners
       loadedDevice.connect()
@@ -1586,17 +1600,34 @@ export class EcovacsPlatform implements DynamicPlatformPlugin {
         platformLang.devInitOpts,
         JSON.stringify({ ...deviceConf, pollInterval }),
       )
-      if (pollInterval > 0) {
+      const startRefresh = (seconds: number) => {
+        clearInterval(this.refreshIntervals[device.did])
         this.refreshIntervals[device.did] = setInterval(() => {
           loadedDevice.run?.('GetBatteryState')
           loadedDevice.run?.('GetChargeState')
-          loadedDevice.run?.(
-            `GetCleanState${loadedDevice.is950type_V2()
-              ? '_V2'
-              : ''}`,
-          )
+          if (matterVacuum.usesWorkState) {
+            matterVacuum.requestWorkState()
+          } else {
+            loadedDevice.run?.(
+              `GetCleanState${loadedDevice.is950type_V2()
+                ? '_V2'
+                : ''}`,
+            )
+          }
           loadedDevice.run?.('GetCleanSpeed')
-        }, pollInterval * 1000)
+        }, seconds * 1000)
+      }
+      if (pollInterval > 0) {
+        startRefresh(pollInterval)
+      }
+      // A robot that reports through getWorkState pushes no state events, so
+      // once it has answered, it is asked more often (see workStatePollInterval)
+      onWorkStateEnabled = () => {
+        const seconds = workStatePollInterval(pollInterval)
+        if (seconds > 0 && seconds < pollInterval) {
+          this.log.debug('[%s] [Matter] Refreshing every %ss, as the robot reports its state only when asked.', dName, seconds)
+          startRefresh(seconds)
+        }
       }
 
       this.log('[%s] [Matter] %s.', dName, platformLang.devInit)
@@ -1608,6 +1639,59 @@ export class EcovacsPlatform implements DynamicPlatformPlugin {
         parseError(err, [platformLang.accNotFound]),
       )
     }
+  }
+
+  /**
+   * The ecovacs-deebot library decides per model whether a robot takes the
+   * newer V2 commands (clean_V2, getCleanInfo_V2, ...). A model it does not
+   * list yet falls back to the old commands, which current robots ignore -
+   * they connect and report the battery, but never show as cleaning. So an
+   * unlisted JSON/MQTT robot is treated as V2, unless the newer alpha library
+   * lists it as V1 (see treatAsUnlistedV2). Returns whether it was switched.
+   */
+  applyUnknownModelDefaults(loadedDevice: any, dName: string): boolean {
+    try {
+      if (!treatAsUnlistedV2(loadedDevice, this.alphaModelList())) {
+        return false
+      }
+      if (!loadedDevice.is950type_V2?.()) {
+        loadedDevice.is950type_V2 = () => true
+        loadedDevice.isNot950type_V2 = () => false
+      }
+      this.log(
+        '[%s] Model \'%s\' (class %s) is not known to the ecovacs-deebot library yet, using the newer V2 commands for it.',
+        dName,
+        loadedDevice.deviceModel,
+        loadedDevice.deviceClass,
+      )
+      return true
+    } catch (err) {
+      this.log.debug('[%s] Could not check the model: %s.', dName, parseError(err))
+      return false
+    }
+  }
+
+  /** The model list of the alpha library, which knows more models, if it loads */
+  alphaModelList(): ModelList | undefined {
+    if (this.alphaModels === undefined) {
+      try {
+        this.alphaModels = require('ecovacs-deebot-alpha/library/tools.js')
+      } catch (err) {
+        this.log.debug('Could not load the model list of the alpha library: %s.', parseError(err))
+        this.alphaModels = null
+      }
+    }
+    return this.alphaModels ?? undefined
+  }
+
+  /** Hand the replies the library cannot handle to the accessory (see routeWorkStateReplies) */
+  routeWorkStateReplies(loadedDevice: any, matterVacuum: EcovacsRoboticVacuumAccessory, dName: string): void {
+    routeWorkStateReplies(loadedDevice.ecovacs, {
+      onWorkState: data => matterVacuum.applyWorkState(data),
+      onWorkStateRefused: () => matterVacuum.workStateUnsupported(),
+      onMapSetV2: data => matterVacuum.applyMapSetV2(data),
+      onRefused: command => this.log.debug('[%s] The robot does not support the command \'%s\', ignoring it.', dName, command),
+    })
   }
 
   addAccessory(device): PlatformAccessory | false {
