@@ -16,6 +16,7 @@ All notable changes to `@homebridge-plugins/homebridge-ecovacs` will be document
 - fix(matter): send the room list again after a failed update
 - fix(matter): do not show a robot as faulty when a status query times out (#330) (@tplnet)
 - feat(matter): support robots the library does not list yet, such as the T90 MAX PRO OMNI (#330) (@tplnet)
+- chore(deps): dependency updates
 
 ## v8.3.0 (2026-11-14)
 
