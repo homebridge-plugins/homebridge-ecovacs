@@ -795,6 +795,16 @@ export class EcovacsPlatform implements DynamicPlatformPlugin {
       return
     }
     try {
+      // A save without a code of its own (the background renewal) keeps the
+      // record of the code already spent. Dropping it made the next fresh
+      // login resubmit the stale code from the config, which Ecovacs rejects,
+      // so the owner got a new code emailed and the plugin stopped (#331)
+      if (usedCode === undefined) {
+        const saved = await this.storageData.getItem('ecovacs_session')
+        if (saved?.account === this.sessionAccountKey()) {
+          usedCode = saved.usedCode
+        }
+      }
       await this.storageData.setItem('ecovacs_session', {
         account: this.sessionAccountKey(),
         uid,

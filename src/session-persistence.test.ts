@@ -140,6 +140,29 @@ describe('renewing the session before it expires', () => {
   })
 })
 
+describe('saving a renewed session', () => {
+  it('keeps the record of the code already spent (#331)', async () => {
+    const platform = makePlatform()
+    platform.config = { username: 'a@b.c', countryCode: 'GB' }
+    platform.storageClientData = true
+    const store = new Map<string, any>()
+    platform.storageData = {
+      getItem: vi.fn(async (key: string) => store.get(key)),
+      setItem: vi.fn(async (key: string, value: any) => {
+        store.set(key, value)
+      }),
+    }
+    vi.spyOn(platform, 'scheduleSessionRefresh').mockReturnValue(undefined)
+
+    // the login that used the emailed code, then the background renewal
+    await platform.saveSessionCache('uid', 'token-1', Date.now() + 1000, '123456')
+    await platform.saveSessionCache('uid', 'token-2', Date.now() + 2000, undefined)
+
+    expect(store.get('ecovacs_session').token).toBe('token-2')
+    expect(store.get('ecovacs_session').usedCode).toBe('123456')
+  })
+})
+
 describe('what a failed renewal must never do', () => {
   it('leaves the working session alone and does not email anyone', async () => {
     vi.useFakeTimers()
