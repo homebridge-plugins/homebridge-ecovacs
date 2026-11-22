@@ -7,6 +7,7 @@ All notable changes to `@homebridge-plugins/homebridge-ecovacs` will be document
 ### Changed
 
 - fix: keep the spent verification code on session renewal, so a stale code is not resent (#331)
+- chore(deps): dependency updates
 
 ## v8.4.0 (2026-11-19)
 
